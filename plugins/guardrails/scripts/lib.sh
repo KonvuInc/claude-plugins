@@ -64,15 +64,22 @@ plugin_binary() {
   return 1
 }
 
-# Prints the repository id that `guardrails sync` recorded for this checkout, or fails.
-# repos.json is the CLI's index, written atomically by serde_json's pretty printer:
-#   {"remotes": {"<remote>": {"repository_id": "<id>" | null, ...}}, "roots": {"<checkout>": "<remote>"}}
-# Keys are matched whole, still JSON-encoded, never by substring. Any other layout fails open.
-repository_id_for() {
+# Prints the root of the checkout containing $1, spelled as `guardrails sync` records it, or fails.
+checkout_root() {
   top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null </dev/null)" || return 1
   # sync records the canonical path. git already resolves symlinks; pwd -P keeps the key equal to
   # the CLI's canonicalize() even where it does not.
   top="$(cd "$top" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$top" ] || return 1
+  printf '%s\n' "$top"
+}
+
+# Prints the repository id that `guardrails sync` recorded for the checkout rooted at $1, or fails.
+# repos.json is the CLI's index, written atomically by serde_json's pretty printer:
+#   {"remotes": {"<remote>": {"repository_id": "<id>" | null, ...}}, "roots": {"<checkout>": "<remote>"}}
+# Keys are matched whole, still JSON-encoded, never by substring. Any other layout fails open.
+repository_id_for() {
+  top="$1"
   [ -n "$top" ] && [ -f "$GUARDRAILS_REPOS_INDEX" ] || return 1
   # serde_json escapes only '"', '\' and control characters. Trailing newlines are trimmed here as
   # in the CLI's own sync, so both name the same checkout; any other control character fails open.
