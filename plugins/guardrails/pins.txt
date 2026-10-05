@@ -1,0 +1,8 @@
+# Pinned guardrails CLI release. The plugin installs only these bytes.
+# Format: version <tag>, then one line per platform: <target triple> <archive sha256> <guardrails binary sha256>.
+# Values come from https://dneaqnz3vqe4a.cloudfront.net/guardrails/<tag>/checksums.txt and the extracted binary.
+version v0.6.29
+aarch64-apple-darwin d444f670908fe8388f2af1cdf8afd92432c372005540b1744526eff154e03082 03fc2ecfb29986eec1748ede820f3b8d032a30184a66efec9a6e6a437d8591a9
+x86_64-apple-darwin 9f13d59f05ac2fc7df0eeb6a74e8651ac28b6abf4e46b52352297f84801c27bf 768c82316d80cc65b00d25f9347ad533501b73f3058bd61f831560c023dbd4ac
+aarch64-unknown-linux-gnu 372947533da57f6aab00228682de3f230b9baa5a78bc72cc680c7c7e4457d41b 2b3ec766acc7ffe70c51aaa8eb1628442a180d458bc1a135435c25786c64ba51
+x86_64-unknown-linux-gnu b176dc5621ab337d371f48a66cee0f4db97b30b52492609073a398e4122239d7 d328e89f2ff39a0ba62c6ab67eb6439ec5101b65569db673be7f4a5a8df0cd6b

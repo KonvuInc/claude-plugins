@@ -1,0 +1,93 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: JSON is valid
+        run: |
+          set -e
+          for f in .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json plugins/*/hooks/hooks.json; do
+            jq empty "$f"
+          done
+      - name: Marketplace entries match their plugins
+        run: |
+          set -e
+          for name in $(jq -r '.plugins[].name' .claude-plugin/marketplace.json); do
+            entry="$(jq -c --arg n "$name" '.plugins[] | select(.name == $n)' .claude-plugin/marketplace.json)"
+            # plugin.json is the only version source; an entry version would silently lose to it.
+            [ "$(echo "$entry" | jq -r '.source')" = "./plugins/${name}" ] || { echo "::error::${name}: source must be ./plugins/${name}"; exit 1; }
+            [ "$(echo "$entry" | jq 'has("version")')" = false ] || { echo "::error::${name}: version belongs in plugin.json only"; exit 1; }
+            manifest="plugins/${name}/.claude-plugin/plugin.json"
+            [ "$(jq -r '.name' "$manifest")" = "$name" ] || { echo "::error::${manifest}: name must be ${name}"; exit 1; }
+            jq -r '.version' "$manifest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::${manifest}: version must be X.Y.Z"; exit 1; }
+          done
+      - name: Changed plugins raise their version
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -e
+          # A pull request is compared with its base branch; a push to main with the commit before
+          # it, which catches two merged pull requests that shipped one version.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git fetch --no-tags --depth=1 origin "refs/heads/${BASE_REF}"
+          else
+            case "$BEFORE" in "" | *[!0]*) ;; *) echo "first push, nothing to compare"; exit 0 ;; esac
+            git fetch --no-tags --depth=1 origin "$BEFORE"
+          fi
+          status=0
+          for dir in plugins/*/; do
+            dir="${dir%/}"
+            name="${dir#plugins/}"
+            manifest="${dir}/.claude-plugin/plugin.json"
+            # A plugin new in this change has no earlier version to compare with.
+            git cat-file -e "FETCH_HEAD:${manifest}" 2>/dev/null || continue
+            entry='.plugins[] | select(.name == $n)'
+            old_entry="$(git show FETCH_HEAD:.claude-plugin/marketplace.json | jq -c --arg n "$name" "$entry")"
+            new_entry="$(jq -c --arg n "$name" "$entry" .claude-plugin/marketplace.json)"
+            if git diff --quiet FETCH_HEAD -- "$dir" && [ "$old_entry" = "$new_entry" ]; then
+              continue
+            fi
+            old="$(git show "FETCH_HEAD:${manifest}" | jq -r '.version')"
+            new="$(jq -r '.version' "$manifest")"
+            if [ "$old" = "$new" ] || [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -n 1)" != "$new" ]; then
+              echo "::error::${name} changed, so its version must rise above ${old} (it is ${new})"
+              status=1
+            fi
+          done
+          exit "$status"
+      - name: Pins are well formed
+        run: |
+          awk '
+            /^#/ || NF == 0 { next }
+            $1 == "version" { if ($2 !~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) bad = 1; v++; next }
+            { if (NF != 3 || length($2) != 64 || length($3) != 64 || $2 !~ /^[0-9a-f]+$/ || $3 !~ /^[0-9a-f]+$/) bad = 1; seen[$1]++; n++ }
+            END {
+              split("aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu", want, " ")
+              for (i in want) if (seen[want[i]] != 1) bad = 1
+              exit (bad || v != 1 || n != 4)
+            }
+          ' plugins/guardrails/pins.txt
+      - name: Install pinned shellcheck
+        run: |
+          set -e
+          curl -fsSLo /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          echo "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+      - name: shellcheck
+        run: /tmp/shellcheck-v0.10.0/shellcheck -x -P SCRIPTDIR -s sh plugins/guardrails/scripts/*.sh tests/*.sh
+      - name: Script tests (dash)
+        run: dash tests/guardrails_scripts_test.sh
+      - name: Script tests (bash as sh)
+        run: bash --posix tests/guardrails_scripts_test.sh
