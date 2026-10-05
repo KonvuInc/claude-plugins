@@ -28,7 +28,7 @@ export CLAUDE_PROJECT_DIR="$project"
 fake="${state}/bin/v9.9.9/guardrails"
 cat >"$fake" <<'EOF'
 #!/bin/sh
-echo "$* SECPROFILE_DIR=${SECPROFILE_DIR:-}" >>"$HOME/calls"
+echo "$* SECPROFILE_DIR=${SECPROFILE_DIR-<unset>} ROOT=${CLAUDE_PROJECT_DIR:-}" >>"$HOME/calls"
 case "${FAKE_MODE:-ok}" in
   ok) echo '{"hookSpecificOutput":{}}' ;;
   block) echo "blocked" >&2; exit 2 ;;
@@ -120,14 +120,22 @@ write_index "$project" '"repo_1"'
 rm -f "${HOME}/calls"
 wrap hook pre-edit
 check "hook output passes through" "${status}:${out}" '0:{"hookSpecificOutput":{}}'
-check "SECPROFILE_DIR points at the repository profile" "$(cat "${HOME}/calls")" "hook pre-edit SECPROFILE_DIR=${state}/profiles/repo_1"
+check "the CLI gets the checkout root to find its synced profile" "$(cat "${HOME}/calls")" "hook pre-edit SECPROFILE_DIR=<unset> ROOT=${project}"
+
+# A SECPROFILE_DIR left in the environment would win over the synced profile inside the CLI.
+rm -f "${HOME}/calls"
+SECPROFILE_DIR="${work}/stale"
+export SECPROFILE_DIR
+wrap hook pre-edit
+unset SECPROFILE_DIR
+check "an inherited SECPROFILE_DIR does not reach the CLI" "$(cat "${HOME}/calls")" "hook pre-edit SECPROFILE_DIR=<unset> ROOT=${project}"
 
 # Claude Code started in a subdirectory, through a symlink: still the checkout sync recorded.
 mkdir -p "${project}/src"
 ln -s "${project}/src" "${work}/link"
 rm -f "${HOME}/calls"
 in_project "${work}/link" wrap hook pre-edit
-check "a symlinked subdirectory finds its checkout's profile" "$(cat "${HOME}/calls")" "hook pre-edit SECPROFILE_DIR=${state}/profiles/repo_1"
+check "a symlinked subdirectory hands the CLI its checkout root" "$(cat "${HOME}/calls")" "hook pre-edit SECPROFILE_DIR=<unset> ROOT=${project}"
 
 # A checkout path that JSON has to escape.
 odd="${work}/we\"ird\\dir"
@@ -137,7 +145,7 @@ odd="$(cd "$odd" && pwd -P)"
 write_index "$(printf '%s' "$odd" | sed 's/\\/\\\\/g; s/"/\\"/g')" '"repo_1"'
 rm -f "${HOME}/calls"
 in_project "$odd" wrap hook pre-edit
-check "a checkout path with a quote and a backslash is matched" "$(cat "${HOME}/calls" 2>/dev/null)" "hook pre-edit SECPROFILE_DIR=${state}/profiles/repo_1"
+check "a checkout path with a quote and a backslash is matched" "$(cat "${HOME}/calls" 2>/dev/null)" "hook pre-edit SECPROFILE_DIR=<unset> ROOT=${odd}"
 write_index "$project" '"repo_1"'
 
 with_mode block wrap hook pre-command
@@ -195,7 +203,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   grep -q '^sync' "${HOME}/calls" 2>/dev/null && break
   sleep 1
 done
-check "the background work still runs auth and sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=,"
+check "the background work still runs auth and sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
 rm -rf "${state:?}/install.lock"
 
 pinned="$(awk '$1 == "version" { print $2 }' "${root}/plugins/guardrails/pins.txt")"
@@ -215,7 +223,7 @@ rm -f "${HOME}/calls"
 (sleep 3; mv "${work}/v9.9.9.saved" "${state}/bin/v9.9.9") &
 sh "${scripts}/worker.sh" session-start
 wait
-check "a session waits for another session's install, then syncs" "$(cut -d' ' -f1-2 "${HOME}/calls" 2>/dev/null | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=,"
+check "a session waits for another session's install, then syncs" "$(cut -d' ' -f1-2 "${HOME}/calls" 2>/dev/null | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
 rm -rf "${state:?}/install.lock"
 
 # A fresh machine waiting on an install whose session dies: reclaim its lock, do not wait 6 minutes.
@@ -240,11 +248,11 @@ mkdir "${state}/install.lock"
 echo "$$" >"${state}/install.lock/pid"
 rm -f "${HOME}/calls"
 with_mode noauth sh "${scripts}/worker.sh" session-start
-check "sync still runs when auth ensure fails" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=,"
+check "sync still runs when auth ensure fails" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
 
 rm -f "${HOME}/calls"
 sh "${scripts}/worker.sh" session-start
-check "auth and sync still run while another session holds the install lock" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=,"
+check "auth and sync still run while another session holds the install lock" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
 rm -rf "${state}/install.lock"
 
 script_dir="$scripts"

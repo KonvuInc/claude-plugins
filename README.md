@@ -59,7 +59,7 @@ Claude Code passes settings `env` to every process it starts, including the mode
 | `PostToolUse` on `Write`, `Edit`, `MultiEdit` | `guardrails hook post-edit` | 5 s |
 | `Stop` | `guardrails hook final-sweep`, then `guardrails flush` in the background to send queued trigger events. | 10 s |
 
-Every hook except `SessionStart` goes through `scripts/guardrails.sh`, which runs the cached CLI by absolute path with `SECPROFILE_DIR` set to the synced profile of the repository Claude Code was started in (`CLAUDE_PROJECT_DIR`), found through the `repos.json` index that `guardrails sync` writes. Files edited in another repository from that session get the starting repository's rules. The plugin fails open: when the CLI, the platform, the profile or the network is missing, the hook exits 0 and Claude Code carries on. Without a synced profile for the repository the CLI is not run at all. Only the CLI's own exit code 2 (its way of asking Claude Code to block) is passed through. An exit 2 that comes with the CLI's usage text means the CLI is too old for that hook, and fails open too.
+Every hook except `SessionStart` goes through `scripts/guardrails.sh`, which runs the cached CLI by absolute path when `guardrails sync` has a profile for the checkout Claude Code was started in (`CLAUDE_PROJECT_DIR`, or the checkout containing it), found through the `repos.json` index that `guardrails sync` writes. The CLI is given that checkout's root as `CLAUDE_PROJECT_DIR` and loads the synced profile itself, which is also what lets it queue the triggers that fire; a `SECPROFILE_DIR` in the environment is not passed on, since it would replace that profile. Files edited in another repository from that session get the starting repository's rules. The plugin fails open: when the CLI, the platform, the profile or the network is missing, the hook exits 0 and Claude Code carries on. Without a synced profile for the repository the CLI is not run at all. Only the CLI's own exit code 2 (its way of asking Claude Code to block) is passed through. An exit 2 that comes with the CLI's usage text means the CLI is too old for that hook, and fails open too.
 
 ### CLI install
 
@@ -79,7 +79,7 @@ The pinned release is `v0.6.29`, the latest published one. It does not have `gua
 | `~/.konvu/guardrails/logs/plugin.log` | One status line per background step. CLI output is never logged: it goes to a private temp file that is deleted after the run, or swept an hour later if the run was killed. |
 | `~/.konvu/guardrails/*.lock`, `auth-operation.json` | Short-lived locks, and an enrollment or rotation request kept until it completes so a retry reuses it. |
 
-No file content ever leaves the laptop. Rules are downloaded and matched locally. The CLI sends Konvu only the repository's git remote, with any credentials in it stripped (to find its rules), and trigger events: which rule fired, when, in which repository and session, for which tool, the decision, and the edited file's path relative to the checkout. Never the code being written.
+No file content ever leaves the laptop. Rules are downloaded and matched locally. The CLI sends Konvu only the repository's git remote, with any credentials in it stripped (to find its rules), and trigger events: which rule fired, when, in which repository and session, for which tool and hook, the decision, the edited file's path relative to the checkout, the rule's CWE and the control observations it came from, and a fingerprint of the synced rules. Never the code being written.
 
 ### Supported platforms
 

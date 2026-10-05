@@ -19,14 +19,20 @@ case "$mode" in
 esac
 
 status=0
-if binary="$(plugin_binary)" && repository_id="$(repository_id_for "${CLAUDE_PROJECT_DIR:-$PWD}")"; then
+if binary="$(plugin_binary)" && root="$(checkout_root "${CLAUDE_PROJECT_DIR:-$PWD}")" &&
+  repository_id="$(repository_id_for "$root")"; then
   profile="${GUARDRAILS_PROFILES_DIR}/${repository_id}"
   if [ -d "$profile" ]; then
     trap 'exit 0' HUP INT TERM
     # stdout (the hook's JSON) goes straight to Claude Code on fd 3; stderr is kept in memory,
     # needing no temp file, and shown only on a block.
     exec 3>&1
-    errors="$(SECPROFILE_DIR="$profile" "$binary" hook "$mode" 2>&1 1>&3 3>&-)"
+    # The CLI finds the synced profile from the checkout root and only then queues the triggers
+    # that fire, so it gets the root; an inherited SECPROFILE_DIR would win over that profile.
+    errors="$(
+      unset SECPROFILE_DIR
+      CLAUDE_PROJECT_DIR="$root" "$binary" hook "$mode" 2>&1 1>&3 3>&-
+    )"
     rc=$?
     exec 3>&-
     # A CLI too old for this hook mode exits 2 with its usage text: fail open, do not block.
