@@ -1,0 +1,12 @@
+{
+  "name": "guardrails",
+  "version": "0.0.1",
+  "description": "Konvu Guardrails: brings your repository's security rules into Claude Code before code is written",
+  "author": {
+    "name": "Konvu",
+    "url": "https://konvu.com"
+  },
+  "homepage": "https://github.com/KonvuInc/claude-plugins",
+  "repository": "https://github.com/KonvuInc/claude-plugins.git",
+  "license": "MIT"
+}

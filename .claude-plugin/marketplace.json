@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "konvu",
+  "description": "Konvu plugins for Claude Code",
+  "owner": {
+    "name": "Konvu",
+    "url": "https://konvu.com"
+  },
+  "plugins": [
+    {
+      "name": "guardrails",
+      "description": "Konvu Guardrails: brings your repository's security rules into Claude Code before code is written",
+      "author": {
+        "name": "Konvu"
+      },
+      "source": "./plugins/guardrails"
+    }
+  ]
+}
