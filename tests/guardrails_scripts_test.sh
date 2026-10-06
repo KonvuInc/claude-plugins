@@ -42,6 +42,10 @@ esac
 exit 0
 EOF
 chmod 0755 "$fake"
+# A CLI from before `hook <mode> --synced`, which the plugin gates on the project's checkout.
+legacy="${state}/bin/v0.6.31/guardrails"
+mkdir -p "${legacy%/guardrails}"
+cp "$fake" "$legacy"
 
 # A prefix assignment before a function call persists in POSIX sh, so modes are set and reset here.
 with_mode() {
@@ -92,18 +96,18 @@ JSON
 wrap hook pre-edit
 check "no CLI installed fails open" "${status}:${out}" "0:"
 
-echo v9.9.9 >"${state}/bin/current"
+echo v0.6.31 >"${state}/bin/current"
 wrap hook pre-edit
-check "no repos.json fails open" "${status}:${out}" "0:"
+check "an older CLI without repos.json fails open" "${status}:${out}" "0:"
 
 write_index "${project}2" '"repo_1"'
 wrap hook pre-edit
 check "a recorded root that only starts with the checkout path is not used" "${status}:${out}" "0:"
 
 # The escaped targets exist, so only the validators keep them from being used.
-mkdir -p "${state}/escaped/v9.9.9" "${state}/v9.9.9"
-cp "$fake" "${state}/v9.9.9/guardrails"
-cp "$fake" "${state}/escaped/v9.9.9/guardrails"
+mkdir -p "${state}/escaped/v0.6.31" "${state}/v0.6.31"
+cp "$fake" "${state}/v0.6.31/guardrails"
+cp "$fake" "${state}/escaped/v0.6.31/guardrails"
 write_index "$project" '"../escaped"'
 wrap hook pre-edit
 check "path traversal repository id is refused" "${status}:${out}" "0:"
@@ -147,6 +151,34 @@ rm -f "${HOME}/calls"
 in_project "$odd" wrap hook pre-edit
 check "a checkout path with a quote and a backslash is matched" "$(cat "${HOME}/calls" 2>/dev/null)" "hook pre-edit SECPROFILE_DIR=<unset> ROOT=${odd}"
 write_index "$project" '"repo_1"'
+
+# From here on the CLI finds each file's repository itself.
+echo v9.9.9 >"${state}/bin/current"
+rm -f "${HOME}/calls"
+wrap hook pre-edit
+check "a current CLI is asked to answer only synced repositories" "$(cat "${HOME}/calls")" "hook pre-edit --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+
+# A session opened anywhere: no checkout, no repos.json entry for it.
+nowhere="${work}/nowhere"
+mkdir -p "$nowhere"
+rm -f "${HOME}/calls"
+in_project "$nowhere" wrap hook post-edit
+check "a session outside any checkout still runs the CLI" "$(cat "${HOME}/calls" 2>/dev/null)" "hook post-edit --synced SECPROFILE_DIR=<unset> ROOT=${nowhere}"
+rm -f "${state}/repos.json" "${HOME}/calls"
+SECPROFILE_DIR="${work}/stale"
+export SECPROFILE_DIR
+wrap hook pre-edit
+unset SECPROFILE_DIR
+check "the CLI needs no repos.json entry for the project, nor an inherited SECPROFILE_DIR" "$(cat "${HOME}/calls" 2>/dev/null)" "hook pre-edit --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+write_index "$project" '"repo_1"'
+
+mv "${state}/profiles" "${work}/profiles.saved"
+mkdir -p "${state}/profiles/.repo_1.gen-1" "${state}/profiles/bad id"
+rm -f "${HOME}/calls"
+wrap hook pre-edit
+check "without any synced profile the CLI is not run" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
+rm -rf "${state:?}/profiles"
+mv "${work}/profiles.saved" "${state}/profiles"
 
 with_mode block wrap hook pre-command
 check "CLI exit 2 still blocks" "$status" "2"
@@ -263,6 +295,10 @@ with_mode noauth sh "${scripts}/worker.sh" session-start
 check "sync still runs when auth ensure fails" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
 
 rm -f "${HOME}/calls"
+in_project "${work}/gone" sh "${scripts}/worker.sh" session-start
+check "sync runs even when the project directory is gone" "$(cut -d' ' -f1 "${HOME}/calls" | tr '\n' ',')" "auth,sync,"
+
+rm -f "${HOME}/calls"
 sh "${scripts}/worker.sh" session-start
 check "auth and sync still run while another session holds the install lock" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
 rm -rf "${state}/install.lock"
@@ -297,6 +333,7 @@ chmod 0755 "${work}/rosetta/uname" "${work}/rosetta/sysctl"
 check "an Intel Mac gets the x86_64 build" "$(PATH="${work}/rosetta:${PATH}" platform_triple)" "x86_64-apple-darwin"
 check "Rosetta 2 gets the native Apple silicon build" "$(FAKE_TRANSLATED=1 PATH="${work}/rosetta:${PATH}" platform_triple)" "aarch64-apple-darwin"
 
+check "only a CLI from the per-file release on is run with --synced" "$(for v in v0.6.32 v0.6.33 v0.10.0 v1.0.0 bogus; do finds_repository_per_file "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.33,v0.10.0,v1.0.0,"
 check "release tags compare numerically" "$(version_lt v0.6.9 v0.6.29 && echo lt):$(version_lt v0.6.29 v0.6.9 || echo ge):$(version_lt v1.0.0 v1.0.0 || echo eq)" "lt:ge:eq"
 
 # Install bookkeeping, on a copy of the plugin whose pins.txt pins the fake CLI for this machine.

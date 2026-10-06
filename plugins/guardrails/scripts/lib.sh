@@ -64,6 +64,26 @@ plugin_binary() {
   return 1
 }
 
+# The first CLI release whose hook finds each file's repository itself (`hook <mode> --synced`).
+# An older one ignores the flag, so it is only given the checkout this script resolves.
+GUARDRAILS_PER_FILE_SINCE="v0.6.33"
+
+# True when the CLI at $1 (bin/<version>/guardrails) is GUARDRAILS_PER_FILE_SINCE or newer.
+finds_repository_per_file() {
+  version="${1%/guardrails}"
+  version="${version##*/}"
+  valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_PER_FILE_SINCE"
+}
+
+# True when `guardrails sync` has published at least one repository's profile. Generation
+# directories start with a dot, so the glob skips them.
+any_profile_synced() {
+  for synced in "${GUARDRAILS_PROFILES_DIR}"/*; do
+    [ -d "$synced" ] && valid_repository_id "${synced##*/}" && return 0
+  done
+  return 1
+}
+
 # Prints the root of the checkout containing $1, spelled as `guardrails sync` records it, or fails.
 checkout_root() {
   top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null </dev/null)" || return 1
