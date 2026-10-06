@@ -72,7 +72,7 @@ From there, `git rev-parse --show-toplevel` gives the checkout, and the checkout
 
 - **Branches and worktrees.** Every branch, and every linked worktree (`git worktree add`), of one repository shares its remote, so they share its rules. Paths in the rules are taken relative to the checkout the file is in.
 - **Forks.** When `origin` is not a repository Konvu knows, the `upstream` remote is tried, so a fork of a company repository gets that repository's rules.
-- **Remote spellings.** `git@github.com:Org/Repo.git`, `ssh://git@github.com/Org/Repo`, `https://user@github.com/org/repo/` and the like are one repository: credentials, `.git`, a trailing `/` and letter case are ignored. An ssh host alias is followed when `~/.ssh/config` has a `Host` block naming exactly that alias with a `HostName`.
+- **Remote spellings.** `git@github.com:Org/Repo.git`, `ssh://git@github.com/Org/Repo`, `https://user@github.com/org/repo/` and the like are one repository: credentials, `.git`, a trailing `/` and letter case are ignored. An ssh remote is matched under the host ssh really connects to: the first `HostName` from `~/.ssh/config` that applies, wildcards and `Include`d files followed. When a `Match` block or a wildcard `Include` could change it, the checkout gets no guardrails rather than a guess.
 - **Submodules** are their own checkout, with their own remote.
 - **Nothing to match.** A file outside any git checkout, a checkout with no `origin` or `upstream` Konvu knows, or a repository whose rules have not synced yet gets no guardrails: the hook exits 0 silently and records nothing. Edits to the CLI's own files (`~/.konvu/guardrails/`) and to Codex's are still refused everywhere.
 
