@@ -1,6 +1,6 @@
 {
   "name": "guardrails",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Konvu Guardrails: brings your repository's security rules into Claude Code before code is written",
   "author": {
     "name": "Konvu",
