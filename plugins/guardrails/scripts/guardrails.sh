@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs one guardrails CLI hook for Claude Code: `guardrails.sh hook <mode>` or `guardrails.sh stop`.
 # SessionStart does not come here: it only starts worker.sh (see session_start.sh).
-# Fails open: exits 0 when the CLI, the platform or this repository's profile is missing, and
-# passes through only the CLI's own exit 2, which is how it asks Claude Code to block.
+# Fails open: exits 0 when the CLI, the platform or every synced profile is missing, and passes
+# through only the CLI's own exit 2, which is how it asks Claude Code to block.
 
 script_dir="$(cd "$(dirname "$0")" && pwd)" || exit 0
 # shellcheck source=lib.sh
@@ -19,19 +19,29 @@ case "$mode" in
 esac
 
 status=0
-if binary="$(plugin_binary)" && root="$(checkout_root "${CLAUDE_PROJECT_DIR:-$PWD}")" &&
-  repository_id="$(repository_id_for "$root")"; then
-  profile="${GUARDRAILS_PROFILES_DIR}/${repository_id}"
-  if [ -d "$profile" ]; then
+flag=""
+if binary="$(plugin_binary)" && any_profile_synced; then
+  if finds_repository_per_file "$binary"; then
+    # The CLI finds each file's repository from the file itself and answers only synced ones.
+    flag=--synced
+    root="${CLAUDE_PROJECT_DIR:-}"
+  elif root="$(checkout_root "${CLAUDE_PROJECT_DIR:-$PWD}")" &&
+    repository_id="$(repository_id_for "$root")" &&
+    [ -d "${GUARDRAILS_PROFILES_DIR}/${repository_id}" ]; then
+    # An older CLI loads the profile of the checkout it is given, found here through repos.json.
+    :
+  else
+    binary=""
+  fi
+  if [ -n "$binary" ]; then
     trap 'exit 0' HUP INT TERM
     # stdout (the hook's JSON) goes straight to Claude Code on fd 3; stderr is kept in memory,
     # needing no temp file, and shown only on a block.
     exec 3>&1
-    # The CLI finds the synced profile from the checkout root and only then queues the triggers
-    # that fire, so it gets the root; an inherited SECPROFILE_DIR would win over that profile.
+    # An inherited SECPROFILE_DIR would win over the synced profiles.
     errors="$(
       unset SECPROFILE_DIR
-      CLAUDE_PROJECT_DIR="$root" "$binary" hook "$mode" 2>&1 1>&3 3>&-
+      CLAUDE_PROJECT_DIR="$root" "$binary" hook "$mode" ${flag:+"$flag"} 2>&1 1>&3 3>&-
     )"
     rc=$?
     exec 3>&-

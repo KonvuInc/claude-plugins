@@ -140,8 +140,9 @@ session_start() {
   log_line "auth ensure: ${RUN_STATUS}"
   # sync runs whatever auth returned: without a usable credential it exits at once, and a failed
   # rotation must not stop a still-valid credential from refreshing the rules.
-  # sync resolves the repository from the working directory, so run it in the project.
-  cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || { log_line "sync: project directory missing"; return 0; }
+  # sync downloads every repository's rules wherever it runs; from the project it fetches that
+  # one first, and an older server that lists nothing syncs only the project's checkout.
+  cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || cd "$HOME" 2>/dev/null || cd /
   run_cli 60 "$binary" sync
   log_line "sync: ${RUN_STATUS}"
 }
