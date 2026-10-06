@@ -147,10 +147,13 @@ session_start() {
 }
 
 flush() {
-  lock="${GUARDRAILS_HOME}/flush.lock"
-  # Events stay queued, so a flush skipped here is sent by the next one.
-  acquire_lock "$lock" || { log_line "flush: skipped, another flush is running"; return 0; }
-  trap 'release_lock "$lock"; rm -f "${output:-}"' EXIT
+  # The CLI serializes flushes on its own `flush.lock` file, so no lock is taken here. Plugin
+  # 0.0.2 took a directory of that name, which the CLI cannot open; remove one it left behind.
+  legacy="${GUARDRAILS_HOME}/flush.lock"
+  if [ -d "$legacy" ] && lock_is_stale "$legacy"; then
+    rm -rf "$legacy"
+  fi
+  trap 'rm -f "${output:-}"' EXIT
   trap 'exit 1' HUP INT TERM
 
   binary="$(plugin_binary)" || return 0

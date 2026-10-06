@@ -192,6 +192,18 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 
+# The CLI serializes flushes on its own flush.lock file: the plugin neither collides with it nor
+# skips because of it, and removes a stale flush.lock directory plugin 0.0.2 left behind.
+rm -f "${HOME}/calls"
+: >"${state}/flush.lock"
+sh "${scripts}/worker.sh" flush
+check "a flush runs beside the CLI's own lock file" "$(grep -c '^flush' "${HOME}/calls")" "1"
+rm -f "${state}/flush.lock" "${HOME}/calls"
+mkdir "${state}/flush.lock"
+echo 999999 >"${state}/flush.lock/pid"
+sh "${scripts}/worker.sh" flush
+check "a stale flush lock directory from an older plugin is removed" "$([ -d "${state}/flush.lock" ] && echo kept || echo removed):$(grep -c '^flush' "${HOME}/calls")" "removed:1"
+
 # SessionStart returns at once and leaves the work to the detached worker (no install: the lock is held).
 mkdir "${state}/install.lock"
 echo "$$" >"${state}/install.lock/pid"
