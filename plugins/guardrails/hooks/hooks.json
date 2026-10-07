@@ -32,7 +32,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -45,26 +45,11 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/scripts/guardrails.sh",
-              "hook",
-              "pre-command"
-            ],
-            "timeout": 5
-          }
-        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -89,7 +74,22 @@
               "${CLAUDE_PLUGIN_ROOT}/scripts/guardrails.sh",
               "stop"
             ],
-            "timeout": 10
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/guardrails.sh",
+              "session-end"
+            ],
+            "timeout": 5
           }
         ]
       }
