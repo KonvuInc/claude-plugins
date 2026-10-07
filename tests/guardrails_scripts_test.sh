@@ -139,6 +139,12 @@ wrap stop
 check "off suppresses old CLI final sweep" "${status}:${out}" "0:"
 sleep 1
 check "off never invokes the old CLI or starts Stop flush" "$(cat "${HOME}/calls" 2>/dev/null)" ""
+touch "${state}/logs/.run.old"
+touch -t 200001010000 "${state}/logs/.run.old"
+wrap stop
+sleep 1
+check "off does not launch a cleanup worker" "$([ -f "${state}/logs/.run.old" ] && echo kept || echo removed)" "kept"
+rm -f "${state}/logs/.run.old"
 sh "${scripts}/worker.sh" flush
 check "off skips a direct flush" "$(cat "${HOME}/calls" 2>/dev/null)" ""
 printf 'off\nextra\n' >"${state}/steering-state"

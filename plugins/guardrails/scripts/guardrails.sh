@@ -8,6 +8,9 @@
 script_dir="$(cd "$(dirname "$0")" && pwd)" || exit 0
 # shellcheck source=lib.sh
 . "${script_dir}/lib.sh"
+if auth_quarantined || steering_disabled || authorization_unusable; then
+  exit 0
+fi
 
 case "$1" in
   hook) mode="$2" ;;
@@ -25,10 +28,6 @@ case "$mode" in
   prompt-submit | pre-edit | post-edit | session-end) ;;
   *) exit 0 ;;
 esac
-if auth_quarantined || steering_disabled || authorization_unusable; then
-  exit 0
-fi
-
 binary="$(plugin_binary)" || exit 0
 flag=""
 root="${CLAUDE_PROJECT_DIR:-}"
