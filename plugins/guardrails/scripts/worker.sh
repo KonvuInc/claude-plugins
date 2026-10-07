@@ -135,6 +135,11 @@ session_start() {
   trap 'exit 1' HUP INT TERM
 
   binary="$(plugin_binary)" || { log_line "session-start: no verified CLI, skipped auth and sync"; return 0; }
+  unset GUARDRAILS_PLUGIN_VERSION
+  plugin_version="$(awk -F '"' '$2 == "version" { print $4; exit }' "${script_dir}/../.claude-plugin/plugin.json" 2>/dev/null)"
+  if [ -n "$plugin_version" ] && [ "${#plugin_version}" -le 64 ]; then
+    export GUARDRAILS_PLUGIN_VERSION="$plugin_version"
+  fi
   # The CLI serializes enrollment itself and writes its caches atomically, so parallel runs are safe.
   run_cli 60 "$binary" auth ensure
   log_line "auth ensure: ${RUN_STATUS}"

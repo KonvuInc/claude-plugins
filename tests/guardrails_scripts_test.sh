@@ -31,6 +31,9 @@ cat >"$fake" <<'EOF'
 #!/bin/sh
 echo "$* SECPROFILE_DIR=${SECPROFILE_DIR-<unset>} ROOT=${CLAUDE_PROJECT_DIR:-}" >>"$HOME/calls"
 echo "$1 $2 ENFORCE=${SECPROFILE_ENFORCE-<unset>} BLOCK=${SECPROFILE_BLOCK_LINES-<unset>} UNATTENDED=${SECPROFILE_UNATTENDED-<unset>}" >>"$HOME/envs"
+if [ "$1" = auth ] || [ "$1" = sync ]; then
+  echo "${GUARDRAILS_PLUGIN_VERSION-<unset>}" >>"$HOME/plugin_versions"
+fi
 case "${FAKE_MODE:-ok}" in
   ok) echo '{"hookSpecificOutput":{}}' ;;
   off) [ "$1" = hook ] && [ "${3:-}" = --synced ] && exit 0
@@ -333,6 +336,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 check "the background work still runs auth and forces sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
+check "auth and sync receive the plugin version" "$(sort -u "${HOME}/plugin_versions")" "$(awk -F '"' '$2 == "version" { print $4; exit }' "${root}/plugins/guardrails/.claude-plugin/plugin.json")"
 
 # A compaction resets the session's refuse-once state; a fresh start or a resume does not.
 for source in startup resume compact; do
