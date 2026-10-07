@@ -14,7 +14,7 @@ if auth_quarantined || authorization_unusable; then
   notice_day="$(date -u +%Y%m%d 2>/dev/null)"
   notice_dir="${GUARDRAILS_HOME}/notice-days"
   if [ -n "$notice_day" ] && (umask 077; mkdir -p "$notice_dir" && mkdir "${notice_dir}/${notice_day}" 2>/dev/null); then
-    printf '%s\n' 'Konvu Guardrails paused; checking workstation access in the background.' >&2
+    printf '%s\n' '{"systemMessage":"Konvu Guardrails paused; checking workstation access in the background."}'
   fi
 fi
 nohup sh "${script_dir}/worker.sh" session-start >/dev/null 2>&1 </dev/null &

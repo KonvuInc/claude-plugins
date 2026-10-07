@@ -408,10 +408,11 @@ with_mode authtransient sh "${scripts}/worker.sh" session-start
 check "transient auth failure still tries sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
 rm -f "${HOME}/calls"
 started="$(date +%s)"
-diagnostic="$(sh "${scripts}/session_start.sh" 2>&1)"
-check "quarantine gives a safe prompt startup diagnostic" "$diagnostic" "Konvu Guardrails paused; checking workstation access in the background."
+diagnostic="$(sh "${scripts}/session_start.sh" 2>"${work}/session-start-stderr")"
+check "quarantine gives a visible startup message" "$diagnostic" '{"systemMessage":"Konvu Guardrails paused; checking workstation access in the background."}'
+check "quarantine notice does not rely on stderr" "$(cat "${work}/session-start-stderr")" ""
 check "quarantine does not delay SessionStart" "$(($(date +%s) - started < 3))" "1"
-check "quarantine notice is limited to once per day" "$(sh "${scripts}/session_start.sh" 2>&1)" ""
+check "quarantine notice is limited to once per day" "$(sh "${scripts}/session_start.sh" 2>"${work}/session-start-stderr")" ""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -f "${HOME}/calls" ] && [ "$(grep -c '^sync --force' "${HOME}/calls")" -ge 2 ] && break
   sleep 1
@@ -427,7 +428,7 @@ check "complete recovery resumes hooks" "${status}:${out}:$(test -e "${state}/au
 
 printf '1\n' >"${state}/authorization-expires-at"
 rm -f "${HOME}/calls"
-diagnostic="$(sh "${scripts}/session_start.sh" 2>&1)"
+diagnostic="$(sh "${scripts}/session_start.sh" 2>"${work}/session-start-stderr")"
 check "expired lease does not repeat today's notice" "$diagnostic" ""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   grep -q '^sync --force' "${HOME}/calls" 2>/dev/null && break
