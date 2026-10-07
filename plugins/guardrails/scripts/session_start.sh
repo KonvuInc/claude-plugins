@@ -11,7 +11,11 @@ fi
 # shellcheck source=lib.sh
 . "${script_dir}/lib.sh"
 if auth_quarantined || authorization_unusable; then
-  printf '%s\n' 'Konvu Guardrails paused; checking workstation access in the background.' >&2
+  notice_day="$(date -u +%Y%m%d 2>/dev/null)"
+  notice_dir="${GUARDRAILS_HOME}/notice-days"
+  if [ -n "$notice_day" ] && (umask 077; mkdir -p "$notice_dir" && mkdir "${notice_dir}/${notice_day}" 2>/dev/null); then
+    printf '%s\n' 'Konvu Guardrails paused; checking workstation access in the background.' >&2
+  fi
 fi
 nohup sh "${script_dir}/worker.sh" session-start >/dev/null 2>&1 </dev/null &
 exit 0
