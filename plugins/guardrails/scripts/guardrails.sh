@@ -25,6 +25,9 @@ case "$mode" in
   prompt-submit | pre-edit | post-edit | session-end) ;;
   *) exit 0 ;;
 esac
+if auth_quarantined || steering_disabled || authorization_unusable; then
+  exit 0
+fi
 
 binary="$(plugin_binary)" || exit 0
 flag=""

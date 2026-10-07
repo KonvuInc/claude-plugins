@@ -18,6 +18,7 @@ check() {
 }
 
 export HOME="${work}/home"
+export GUARDRAILS_CREDENTIAL_STORE=file
 state="${HOME}/.konvu/guardrails"
 project="${work}/project"
 mkdir -p "${state}/bin/v9.9.9" "${state}/profiles/repo_1" "${state}/logs" "$project"
@@ -32,6 +33,8 @@ echo "$* SECPROFILE_DIR=${SECPROFILE_DIR-<unset>} ROOT=${CLAUDE_PROJECT_DIR:-}" 
 echo "$1 $2 ENFORCE=${SECPROFILE_ENFORCE-<unset>} BLOCK=${SECPROFILE_BLOCK_LINES-<unset>} UNATTENDED=${SECPROFILE_UNATTENDED-<unset>}" >>"$HOME/envs"
 case "${FAKE_MODE:-ok}" in
   ok) echo '{"hookSpecificOutput":{}}' ;;
+  off) [ "$1" = hook ] && [ "${3:-}" = --synced ] && exit 0
+       echo '{"hookSpecificOutput":{}}' ;;
   block) echo "blocked" >&2; exit 2 ;;
   crash) exit 101 ;;
   slow) sleep 3 ;;
@@ -39,6 +42,10 @@ case "${FAKE_MODE:-ok}" in
   usage) printf 'guardrails \342\200\224 security profile enforcement for coding agents\n\n  guardrails hook <session-start|pre-edit>\n' >&2; exit 2 ;;
   quoted) printf '[secprofile] Before finishing, resolve these:\n  - x\n  guardrails hook <y.py: hit\n' >&2; exit 2 ;;
   noauth) [ "$1" = auth ] && exit 3 ;;
+  refused) [ "$1" = auth ] && exit 4 ;;
+  authtransient) [ "$1" = auth ] && exit 5 ;;
+  syncfail) [ "$1" = sync ] && exit 5 ;;
+  recover) [ "$1" = sync ] && rm -f "$HOME/.konvu/guardrails/auth-quarantine" ;;
 esac
 exit 0
 EOF
@@ -123,8 +130,57 @@ check "missing profile fails open" "${status}:${out}" "0:"
 
 write_index "$project" '"repo_1"'
 rm -f "${HOME}/calls"
+printf 'off\n' >"${state}/steering-state"
+for mode in prompt-submit pre-command pre-edit post-edit; do
+  wrap hook "$mode"
+  check "off suppresses old CLI $mode" "${status}:${out}" "0:"
+done
+wrap stop
+check "off suppresses old CLI final sweep" "${status}:${out}" "0:"
+sleep 1
+check "off never invokes the old CLI or starts Stop flush" "$(cat "${HOME}/calls" 2>/dev/null)" ""
+sh "${scripts}/worker.sh" flush
+check "off skips a direct flush" "$(cat "${HOME}/calls" 2>/dev/null)" ""
+printf 'off\nextra\n' >"${state}/steering-state"
+wrap hook pre-edit
+check "malformed steering state defaults on" "${status}:${out}" '0:{"hookSpecificOutput":{}}'
+printf 'on\n' >"${state}/steering-state"
+rm -f "${HOME}/calls"
+printf 'off\n' >"${state}/auth-quarantine"
+for mode in prompt-submit pre-command pre-edit post-edit; do
+  wrap hook "$mode"
+  check "quarantine suppresses old CLI $mode" "${status}:${out}" "0:"
+done
+wrap stop
+check "quarantine suppresses old CLI final sweep" "${status}:${out}" "0:"
+sleep 1
+sh "${scripts}/worker.sh" flush
+check "quarantine skips Stop and direct flush" "$(cat "${HOME}/calls" 2>/dev/null)" ""
+printf 'broken\n' >"${state}/auth-quarantine"
+wrap hook pre-edit
+check "a malformed quarantine marker still suppresses hooks" "${status}:${out}" "0:"
+rm -f "${state}/auth-quarantine"
+ln -s "${work}/missing-quarantine-target" "${state}/auth-quarantine"
+wrap hook pre-edit
+check "a dangling quarantine marker still suppresses hooks" "${status}:${out}" "0:"
+rm -f "${state}/auth-quarantine"
+printf '1\n' >"${state}/authorization-expires-at"
+wrap hook pre-edit
+check "expired lease suppresses old CLI hooks" "${status}:${out}" "0:"
+sh "${scripts}/worker.sh" flush
+check "expired lease suppresses old CLI flush" "$(cat "${HOME}/calls" 2>/dev/null)" ""
+printf 'broken\n' >"${state}/authorization-expires-at"
+wrap hook pre-edit
+check "malformed lease suppresses old CLI hooks" "${status}:${out}" "0:"
+rm -f "${state}/authorization-expires-at"
+mkdir "${state}/authorization-expires-at"
+wrap hook pre-edit
+check "unreadable lease suppresses old CLI hooks" "${status}:${out}" "0:"
+rmdir "${state}/authorization-expires-at"
+printf '%s\n' "$(($(date +%s) + 600))" >"${state}/authorization-expires-at"
 wrap hook pre-edit
 check "hook output passes through" "${status}:${out}" '0:{"hookSpecificOutput":{}}'
+rm -f "${state}/authorization-expires-at"
 check "the CLI gets the checkout root to find its synced profile" "$(cat "${HOME}/calls")" "hook pre-edit SECPROFILE_DIR=<unset> ROOT=${project}"
 
 # A SECPROFILE_DIR left in the environment would win over the synced profile inside the CLI.
@@ -158,6 +214,11 @@ echo v9.9.9 >"${state}/bin/current"
 rm -f "${HOME}/calls"
 wrap hook pre-edit
 check "a current CLI is asked to answer only synced repositories" "$(cat "${HOME}/calls")" "hook pre-edit --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+
+with_mode off wrap hook pre-edit
+check "an off CLI suppresses a synced hook" "${status}:${out}" "0:"
+wrap hook pre-edit
+check "a re-enabled CLI resumes the synced hook" "${status}:${out}" '0:{"hookSpecificOutput":{}}'
 
 # A session opened anywhere: no checkout, no repos.json entry for it.
 nowhere="${work}/nowhere"
@@ -265,7 +326,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   grep -q '^sync' "${HOME}/calls" 2>/dev/null && break
   sleep 1
 done
-check "the background work still runs auth and sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
+check "the background work still runs auth and forces sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
 
 # A compaction resets the session's refuse-once state; a fresh start or a resume does not.
 for source in startup resume compact; do
@@ -293,7 +354,7 @@ rm -f "${HOME}/calls"
 (sleep 3; mv "${work}/v9.9.9.saved" "${state}/bin/v9.9.9") &
 sh "${scripts}/worker.sh" session-start
 wait
-check "a session waits for another session's install, then syncs" "$(cut -d' ' -f1-2 "${HOME}/calls" 2>/dev/null | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
+check "a session waits for another session's install, then syncs" "$(cut -d' ' -f1-2 "${HOME}/calls" 2>/dev/null | tr '\n' ',')" "auth ensure,sync --force,"
 rm -rf "${state:?}/install.lock"
 
 # A fresh machine waiting on an install whose session dies: reclaim its lock, do not wait 6 minutes.
@@ -318,7 +379,51 @@ mkdir "${state}/install.lock"
 echo "$$" >"${state}/install.lock/pid"
 rm -f "${HOME}/calls"
 with_mode noauth sh "${scripts}/worker.sh" session-start
-check "sync still runs when auth ensure fails" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
+check "sync still runs when auth ensure fails" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
+
+printf 'off\n' >"${state}/steering-state"
+rm -f "${HOME}/calls"
+sh "${scripts}/worker.sh" session-start
+check "off still runs auth and forced sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
+printf 'on\n' >"${state}/steering-state"
+
+printf 'off\n' >"${state}/auth-quarantine"
+for mode in noauth refused; do
+  rm -f "${HOME}/calls"
+  with_mode "$mode" sh "${scripts}/worker.sh" session-start
+  check "quarantined $mode skips duplicate sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,"
+done
+check "skipped sync is logged privately" "$(grep -c 'sync: skipped while authorization is paused' "${state}/logs/plugin.log")" "2"
+rm -f "${HOME}/calls"
+with_mode authtransient sh "${scripts}/worker.sh" session-start
+check "transient auth failure still tries sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
+rm -f "${HOME}/calls"
+started="$(date +%s)"
+diagnostic="$(sh "${scripts}/session_start.sh" 2>&1)"
+check "quarantine gives a safe prompt startup diagnostic" "$diagnostic" "Konvu Guardrails paused; checking workstation access in the background."
+check "quarantine does not delay SessionStart" "$(($(date +%s) - started < 3))" "1"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q '^sync --force' "${HOME}/calls" 2>/dev/null && break
+  sleep 1
+done
+check "quarantine still runs auth and sync in the background" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
+rm -f "${HOME}/calls"
+with_mode syncfail sh "${scripts}/worker.sh" session-start
+wrap hook pre-edit
+check "failed recovery keeps quarantine" "${status}:${out}:$(test -e "${state}/auth-quarantine" && echo kept)" "0::kept"
+with_mode recover sh "${scripts}/worker.sh" session-start
+wrap hook pre-edit
+check "complete recovery resumes hooks" "${status}:${out}:$(test -e "${state}/auth-quarantine" && echo kept || echo cleared)" '0:{"hookSpecificOutput":{}}:cleared'
+
+printf '1\n' >"${state}/authorization-expires-at"
+rm -f "${HOME}/calls"
+diagnostic="$(sh "${scripts}/session_start.sh" 2>&1)"
+check "expired lease gives the same safe startup diagnostic" "$diagnostic" "Konvu Guardrails paused; checking workstation access in the background."
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q '^sync --force' "${HOME}/calls" 2>/dev/null && break
+  sleep 1
+done
+rm -f "${state}/authorization-expires-at"
 
 rm -f "${HOME}/calls"
 in_project "${work}/gone" sh "${scripts}/worker.sh" session-start
@@ -326,7 +431,7 @@ check "sync runs even when the project directory is gone" "$(cut -d' ' -f1 "${HO
 
 rm -f "${HOME}/calls"
 sh "${scripts}/worker.sh" session-start
-check "auth and sync still run while another session holds the install lock" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
+check "auth and sync still run while another session holds the install lock" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
 rm -rf "${state}/install.lock"
 
 script_dir="$scripts"
