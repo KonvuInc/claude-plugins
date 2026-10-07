@@ -75,6 +75,16 @@ finds_repository_per_file() {
   valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_PER_FILE_SINCE"
 }
 
+# The first CLI release with `hook session-end`, which deletes a session's refuse-once state.
+GUARDRAILS_SESSION_END_SINCE="v0.6.35"
+
+# True when the CLI at $1 (bin/<version>/guardrails) is GUARDRAILS_SESSION_END_SINCE or newer.
+ends_sessions() {
+  version="${1%/guardrails}"
+  version="${version##*/}"
+  valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_SESSION_END_SINCE"
+}
+
 # True when `guardrails sync` has published at least one repository's profile. Generation
 # directories start with a dot, so the glob skips them.
 any_profile_synced() {

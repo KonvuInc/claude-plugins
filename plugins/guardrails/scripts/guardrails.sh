@@ -1,8 +1,9 @@
 #!/bin/sh
-# Runs one guardrails CLI hook for Claude Code: `guardrails.sh hook <mode>` or `guardrails.sh stop`.
-# SessionStart does not come here: it only starts worker.sh (see session_start.sh).
-# Fails open: exits 0 when the CLI, the platform or every synced profile is missing, and passes
-# through only the CLI's own exit 2, which is how it asks Claude Code to block.
+# Runs one guardrails CLI hook for Claude Code: `guardrails.sh hook <mode>`, `guardrails.sh
+# session-end` or `guardrails.sh stop`. SessionStart does not come here: it only starts worker.sh
+# (see session_start.sh).
+# Always exits 0. Refusals reach Claude Code as the CLI's own JSON on stdout, never as an exit
+# code, so a missing CLI, platform or synced profile, a crash or a timeout all fail open.
 
 script_dir="$(cd "$(dirname "$0")" && pwd)" || exit 0
 # shellcheck source=lib.sh
@@ -10,51 +11,50 @@ script_dir="$(cd "$(dirname "$0")" && pwd)" || exit 0
 
 case "$1" in
   hook) mode="$2" ;;
-  stop) mode=final-sweep ;;
+  session-end) mode=session-end ;;
+  stop)
+    # Stop only sends the queued trigger events, detached so it never delays or holds the turn.
+    # No final sweep: it would block the turn, and on a turn with nothing to say it would wipe the
+    # session's refuse-once state.
+    nohup sh "${script_dir}/worker.sh" flush >/dev/null 2>&1 </dev/null &
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 case "$mode" in
-  prompt-submit | pre-command | pre-edit | post-edit | final-sweep) ;;
+  prompt-submit | pre-edit | post-edit | session-end) ;;
   *) exit 0 ;;
 esac
 
-status=0
+binary="$(plugin_binary)" || exit 0
 flag=""
-if binary="$(plugin_binary)" && any_profile_synced; then
-  if finds_repository_per_file "$binary"; then
-    # The CLI finds each file's repository from the file itself and answers only synced ones.
-    flag=--synced
-    root="${CLAUDE_PROJECT_DIR:-}"
-  elif root="$(checkout_root "${CLAUDE_PROJECT_DIR:-$PWD}")" &&
-    repository_id="$(repository_id_for "$root")" &&
-    [ -d "${GUARDRAILS_PROFILES_DIR}/${repository_id}" ]; then
-    # An older CLI loads the profile of the checkout it is given, found here through repos.json.
-    :
-  else
-    binary=""
-  fi
-  if [ -n "$binary" ]; then
-    trap 'exit 0' HUP INT TERM
-    # stdout (the hook's JSON) goes straight to Claude Code on fd 3; stderr is kept in memory,
-    # needing no temp file, and shown only on a block.
-    exec 3>&1
-    # An inherited SECPROFILE_DIR would win over the synced profiles.
-    errors="$(
-      unset SECPROFILE_DIR
-      CLAUDE_PROJECT_DIR="$root" "$binary" hook "$mode" ${flag:+"$flag"} 2>&1 1>&3 3>&-
-    )"
-    rc=$?
-    exec 3>&-
-    # A CLI too old for this hook mode exits 2 with its usage text: fail open, do not block.
-    if [ "$rc" -eq 2 ] && ! printf '%s\n' "$errors" | is_usage_output; then
-      status=2
-      printf '%s\n' "$errors" >&2
-    fi
-  fi
+root="${CLAUDE_PROJECT_DIR:-}"
+if [ "$mode" = session-end ]; then
+  # Only deletes this session's local state, so it needs no synced profile, only a CLI that has it.
+  ends_sessions "$binary" || exit 0
+  flag=--synced
+elif ! any_profile_synced; then
+  exit 0
+elif finds_repository_per_file "$binary"; then
+  # The CLI finds each file's repository from the file itself and answers only synced ones.
+  flag=--synced
+elif root="$(checkout_root "${CLAUDE_PROJECT_DIR:-$PWD}")" &&
+  repository_id="$(repository_id_for "$root")" &&
+  [ -d "${GUARDRAILS_PROFILES_DIR}/${repository_id}" ]; then
+  # An older CLI loads the profile of the checkout it is given, found here through repos.json.
+  :
+else
+  exit 0
 fi
 
-# Stop sends the queued trigger events after the final sweep, detached so it never delays the turn.
-if [ "$1" = stop ]; then
-  nohup sh "${script_dir}/worker.sh" flush >/dev/null 2>&1 </dev/null &
-fi
-exit "$status"
+trap 'exit 0' HUP INT TERM
+# The benchmark's enforce arm: refuse the first edit per file per session that carries guidance.
+# An inherited SECPROFILE_DIR would win over the synced profiles, and the other variables would
+# change the thresholds the arm was measured with. stdout (the hook's JSON) goes to Claude Code.
+(
+  unset SECPROFILE_DIR SECPROFILE_WARN_LINES SECPROFILE_WARN_FILES SECPROFILE_BLOCK_LINES \
+    SECPROFILE_BLOCK_FILES SECPROFILE_UNATTENDED SECPROFILE_CANARY
+  export SECPROFILE_ENFORCE=1 CLAUDE_PROJECT_DIR="$root"
+  exec "$binary" hook "$mode" ${flag:+"$flag"} 2>/dev/null
+)
+exit 0

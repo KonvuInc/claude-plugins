@@ -29,6 +29,7 @@ fake="${state}/bin/v9.9.9/guardrails"
 cat >"$fake" <<'EOF'
 #!/bin/sh
 echo "$* SECPROFILE_DIR=${SECPROFILE_DIR-<unset>} ROOT=${CLAUDE_PROJECT_DIR:-}" >>"$HOME/calls"
+echo "$1 $2 ENFORCE=${SECPROFILE_ENFORCE-<unset>} BLOCK=${SECPROFILE_BLOCK_LINES-<unset>} UNATTENDED=${SECPROFILE_UNATTENDED-<unset>}" >>"$HOME/envs"
 case "${FAKE_MODE:-ok}" in
   ok) echo '{"hookSpecificOutput":{}}' ;;
   block) echo "blocked" >&2; exit 2 ;;
@@ -177,23 +178,40 @@ mkdir -p "${state}/profiles/.repo_1.gen-1" "${state}/profiles/bad id"
 rm -f "${HOME}/calls"
 wrap hook pre-edit
 check "without any synced profile the CLI is not run" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
+wrap session-end
+check "session-end still clears state left from before the profiles went" "$(cut -d' ' -f1-3 "${HOME}/calls" 2>/dev/null)" "hook session-end --synced"
 rm -rf "${state:?}/profiles"
 mv "${work}/profiles.saved" "${state}/profiles"
 
-with_mode block wrap hook pre-command
-check "CLI exit 2 still blocks" "$status" "2"
-reason="$(echo '{}' | with_mode block sh "${scripts}/guardrails.sh" hook pre-command 2>&1 >/dev/null)"
-check "a block keeps the CLI's reason on stderr" "$reason" "blocked"
+# Refusals travel as JSON on stdout; an exit code never holds Claude Code.
+with_mode block wrap hook pre-edit
+check "CLI exit 2 fails open" "$status" "0"
+reason="$(echo '{}' | with_mode block sh "${scripts}/guardrails.sh" hook pre-edit 2>&1 >/dev/null)"
+check "the CLI's stderr never reaches Claude Code" "$reason" ""
 
 with_mode crash wrap hook post-edit
 check "CLI crash fails open" "$status" "0"
 
-with_mode usage wrap hook pre-command
-check "CLI without this hook mode fails open instead of blocking" "$status" "0"
+with_mode usage wrap hook post-edit
+check "CLI without this hook mode fails open" "$status" "0"
 
-reason="$(echo '{}' | with_mode quoted sh "${scripts}/guardrails.sh" stop 2>&1 >/dev/null)"
-status=$?
-check "a block quoting a usage-like file path still blocks, reason intact" "${status}:$(printf '%s' "$reason" | wc -l | tr -d ' ')" "2:2"
+rm -f "${HOME}/calls" "${HOME}/envs"
+SECPROFILE_BLOCK_LINES=1 SECPROFILE_UNATTENDED=1
+export SECPROFILE_BLOCK_LINES SECPROFILE_UNATTENDED
+for mode in prompt-submit pre-edit post-edit; do
+  wrap hook "$mode"
+done
+unset SECPROFILE_BLOCK_LINES SECPROFILE_UNATTENDED
+check "every hook runs enforced, with the measured thresholds" "$(tr '\n' ',' <"${HOME}/envs")" "hook prompt-submit ENFORCE=1 BLOCK=<unset> UNATTENDED=<unset>,hook pre-edit ENFORCE=1 BLOCK=<unset> UNATTENDED=<unset>,hook post-edit ENFORCE=1 BLOCK=<unset> UNATTENDED=<unset>,"
+
+rm -f "${HOME}/calls"
+wrap hook pre-command
+check "the command hook is not run" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
+wrap hook final-sweep
+check "the final sweep is not run as a hook either" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
+
+wrap session-end
+check "session-end deletes the session's state through the CLI" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0:{\"hookSpecificOutput\":{}}:hook session-end --synced SECPROFILE_DIR=<unset> ROOT=${project}"
 
 wrap hook not-a-mode
 check "unknown hook mode is ignored" "${status}:${out}" "0:"
@@ -207,13 +225,13 @@ check "a current version that walks out of bin/ is refused" "${status}:${out}" "
 echo v9.9.9 >"${state}/bin/current"
 
 rm -f "${HOME}/calls"
-wrap stop
-check "stop runs the final sweep" "${status}:${out}" '0:{"hookSpecificOutput":{}}'
+with_mode block wrap stop
+check "stop never blocks and says nothing" "${status}:${out}" "0:"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   grep -q '^flush' "${HOME}/calls" 2>/dev/null && break
   sleep 1
 done
-check "stop starts flush in the background" "$(grep -c '^flush' "${HOME}/calls")" "1"
+check "stop only starts flush in the background, never the final sweep" "$(tr '\n' ',' <"${HOME}/calls" | cut -d' ' -f1)" "flush"
 
 started="$(date +%s)"
 # Claude Code reads hook output through pipes, so the detached flush must not hold them open.
@@ -248,6 +266,14 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 check "the background work still runs auth and sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync SECPROFILE_DIR=<unset>,"
+
+# A compaction resets the session's refuse-once state; a fresh start or a resume does not.
+for source in startup resume compact; do
+  rm -f "${HOME}/calls"
+  printf '{"session_id":"s1","hook_event_name":"SessionStart","source":"%s"}' "$source" | sh "${scripts}/session_start.sh"
+  grep -q '^sync' "${HOME}/calls" 2>/dev/null || sleep 2
+  check "SessionStart from $source resets the session only after a compaction" "$(grep -c '^hook session-end --synced' "${HOME}/calls")" "$([ "$source" = compact ] && echo 1 || echo 0)"
+done
 rm -rf "${state:?}/install.lock"
 
 pinned="$(awk '$1 == "version" { print $2 }' "${root}/plugins/guardrails/pins.txt")"
@@ -333,6 +359,7 @@ chmod 0755 "${work}/rosetta/uname" "${work}/rosetta/sysctl"
 check "an Intel Mac gets the x86_64 build" "$(PATH="${work}/rosetta:${PATH}" platform_triple)" "x86_64-apple-darwin"
 check "Rosetta 2 gets the native Apple silicon build" "$(FAKE_TRANSLATED=1 PATH="${work}/rosetta:${PATH}" platform_triple)" "aarch64-apple-darwin"
 
+check "only a CLI from the session-end release on is asked to end a session" "$(for v in v0.6.34 v0.6.35 v0.10.0 bogus; do ends_sessions "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.35,v0.10.0,"
 check "only a CLI from the per-file release on is run with --synced" "$(for v in v0.6.32 v0.6.33 v0.10.0 v1.0.0 bogus; do finds_repository_per_file "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.33,v0.10.0,v1.0.0,"
 check "release tags compare numerically" "$(version_lt v0.6.9 v0.6.29 && echo lt):$(version_lt v0.6.29 v0.6.9 || echo ge):$(version_lt v1.0.0 v1.0.0 || echo eq)" "lt:ge:eq"
 
@@ -368,5 +395,12 @@ echo tampered >>"${bin}/v2.0.0/guardrails"
 PATH="${work}/nocurl:${PATH}" sh "${work}/plugin/scripts/worker.sh" session-start
 check "a binary failing its pin is removed" "$([ -e "${bin}/v2.0.0/guardrails" ] && echo present || echo removed)" "removed"
 check "the removal and the failed download are logged" "$(grep -c 'removed v2.0.0 binary that failed its checksum\|download of v2.0.0 failed' "${state}/logs/plugin.log")" "2"
+
+# The wiring itself: the enforce arm's events, no Bash hook, no final sweep.
+hooks="${root}/plugins/guardrails/hooks/hooks.json"
+check "no hook runs the command check or the final sweep" "$(grep -c '"pre-command"\|"final-sweep"\|"Bash"' "$hooks")" "0"
+check "edits and notebook edits are matched before and after the tool" "$(grep -c '"matcher": "Write|Edit|MultiEdit|NotebookEdit"' "$hooks")" "2"
+# shellcheck disable=SC2016 # ${CLAUDE_PLUGIN_ROOT} is literal text in hooks.json
+check "SessionEnd ends the session through guardrails.sh" "$(tr -d ' \n' <"$hooks" | grep -c '"SessionEnd":\[{"hooks":\[{"type":"command","command":"sh","args":\["${CLAUDE_PLUGIN_ROOT}/scripts/guardrails.sh","session-end"\]')" "1"
 
 [ "$failures" -eq 0 ] || exit 1
