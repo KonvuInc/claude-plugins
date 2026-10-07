@@ -92,7 +92,7 @@ The pinned release is listed in [`pins.txt`](plugins/guardrails/pins.txt). `v0.6
 
 | Location | Content |
 | --- | --- |
-| macOS Keychain, service `com.konvu.guardrails.workstation` | The workstation credential, written by `guardrails auth ensure`. On Linux it is `~/.konvu/guardrails/credentials.json` (mode 600). The deployment key is used only to enroll. |
+| `~/.konvu/guardrails/credentials.json` | The workstation credential on every supported OS (mode 0600). The deployment key is used only to enroll. |
 | `~/.konvu/guardrails/bin/<version>/guardrails` | The verified CLI. `bin/current` names the version in use. |
 | `~/.konvu/guardrails/profiles/<repository_id>/` | The synced rules for one repository. |
 | `~/.konvu/guardrails/repos.json` | Written by `guardrails sync`: each repository's git remote URL, normalized, and its Konvu repository id. |
@@ -116,7 +116,6 @@ macOS (Apple silicon and Intel) and Linux with glibc (x86_64 and arm64), with Cl
 
 ```sh
 rm -rf ~/.konvu/guardrails
-security delete-generic-password -s com.konvu.guardrails.workstation   # macOS only
 ```
 
 ## Versioning

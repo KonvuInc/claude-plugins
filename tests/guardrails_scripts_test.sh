@@ -18,7 +18,6 @@ check() {
 }
 
 export HOME="${work}/home"
-export GUARDRAILS_CREDENTIAL_STORE=file
 state="${HOME}/.konvu/guardrails"
 project="${work}/project"
 mkdir -p "${state}/bin/v9.9.9" "${state}/profiles/repo_1" "${state}/logs" "$project"
