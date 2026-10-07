@@ -396,4 +396,11 @@ PATH="${work}/nocurl:${PATH}" sh "${work}/plugin/scripts/worker.sh" session-star
 check "a binary failing its pin is removed" "$([ -e "${bin}/v2.0.0/guardrails" ] && echo present || echo removed)" "removed"
 check "the removal and the failed download are logged" "$(grep -c 'removed v2.0.0 binary that failed its checksum\|download of v2.0.0 failed' "${state}/logs/plugin.log")" "2"
 
+# The wiring itself: the enforce arm's events, no Bash hook, no final sweep.
+hooks="${root}/plugins/guardrails/hooks/hooks.json"
+check "no hook runs the command check or the final sweep" "$(grep -c '"pre-command"\|"final-sweep"\|"Bash"' "$hooks")" "0"
+check "edits and notebook edits are matched before and after the tool" "$(grep -c '"matcher": "Write|Edit|MultiEdit|NotebookEdit"' "$hooks")" "2"
+# shellcheck disable=SC2016 # ${CLAUDE_PLUGIN_ROOT} is literal text in hooks.json
+check "SessionEnd ends the session through guardrails.sh" "$(tr -d ' \n' <"$hooks" | grep -c '"SessionEnd":\[{"hooks":\[{"type":"command","command":"sh","args":\["${CLAUDE_PLUGIN_ROOT}/scripts/guardrails.sh","session-end"\]')" "1"
+
 [ "$failures" -eq 0 ] || exit 1
