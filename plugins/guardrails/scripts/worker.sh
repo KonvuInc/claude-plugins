@@ -1,6 +1,6 @@
 #!/bin/sh
 # Background work for the guardrails plugin, always started detached with nohup.
-#   worker.sh session-start   install the pinned CLI, then `guardrails auth ensure` and `guardrails sync`
+#   worker.sh session-start   install the pinned CLI, then `guardrails auth ensure` and `guardrails sync --force`
 #   worker.sh flush           `guardrails flush`, sending queued trigger events
 # Every step logs one status line to ~/.konvu/guardrails/logs/plugin.log and never logs CLI output.
 
@@ -135,19 +135,32 @@ session_start() {
   trap 'exit 1' HUP INT TERM
 
   binary="$(plugin_binary)" || { log_line "session-start: no verified CLI, skipped auth and sync"; return 0; }
+  unset GUARDRAILS_PLUGIN_VERSION
+  plugin_version="$(awk -F '"' '$2 == "version" { print $4; exit }' "${script_dir}/../.claude-plugin/plugin.json" 2>/dev/null)"
+  if [ -n "$plugin_version" ] && [ "${#plugin_version}" -le 64 ]; then
+    export GUARDRAILS_PLUGIN_VERSION="$plugin_version"
+  fi
   # The CLI serializes enrollment itself and writes its caches atomically, so parallel runs are safe.
   run_cli 60 "$binary" auth ensure
   log_line "auth ensure: ${RUN_STATUS}"
-  # sync runs whatever auth returned: without a usable credential it exits at once, and a failed
-  # rotation must not stop a still-valid credential from refreshing the rules.
+  if auth_quarantined; then
+    case "$RUN_STATUS" in
+      3 | 4) log_line "sync: skipped while authorization is paused"; return 0 ;;
+    esac
+  fi
+  # After a transient auth failure, sync can still use a valid credential to refresh the rules.
   # sync downloads every repository's rules wherever it runs; from the project it fetches that
   # one first, and an older server that lists nothing syncs only the project's checkout.
+  # Force refresh so a company steering change reaches the next session despite the listing cache.
   cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || cd "$HOME" 2>/dev/null || cd /
-  run_cli 60 "$binary" sync
+  run_cli 60 "$binary" sync --force
   log_line "sync: ${RUN_STATUS}"
 }
 
 flush() {
+  if auth_quarantined || steering_disabled || authorization_unusable; then
+    return 0
+  fi
   # The CLI serializes flushes on its own `flush.lock` file, so no lock is taken here. Plugin
   # 0.0.2 took a directory of that name, which the CLI cannot open; remove one it left behind.
   legacy="${GUARDRAILS_HOME}/flush.lock"

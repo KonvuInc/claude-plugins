@@ -6,6 +6,9 @@ GUARDRAILS_BIN_DIR="${GUARDRAILS_HOME}/bin"
 GUARDRAILS_CURRENT="${GUARDRAILS_BIN_DIR}/current"
 GUARDRAILS_PROFILES_DIR="${GUARDRAILS_HOME}/profiles"
 GUARDRAILS_REPOS_INDEX="${GUARDRAILS_HOME}/repos.json"
+GUARDRAILS_STEERING_STATE="${GUARDRAILS_HOME}/steering-state"
+GUARDRAILS_AUTH_QUARANTINE="${GUARDRAILS_HOME}/auth-quarantine"
+GUARDRAILS_AUTHORIZATION_EXPIRY="${GUARDRAILS_HOME}/authorization-expires-at"
 GUARDRAILS_LOG_DIR="${GUARDRAILS_HOME}/logs"
 GUARDRAILS_LOG="${GUARDRAILS_LOG_DIR}/plugin.log"
 GUARDRAILS_DOWNLOAD_BASE="https://dneaqnz3vqe4a.cloudfront.net/guardrails"
@@ -62,6 +65,30 @@ plugin_binary() {
     fi
   done
   return 1
+}
+
+# The CLI publishes this tiny state file atomically; missing or malformed means steering is on.
+steering_disabled() {
+  [ -f "$GUARDRAILS_STEERING_STATE" ] && printf 'off\n' | cmp -s - "$GUARDRAILS_STEERING_STATE"
+}
+
+# Any quarantine marker keeps old CLI fallbacks from running until a complete sync clears it.
+auth_quarantined() {
+  [ -e "$GUARDRAILS_AUTH_QUARANTINE" ] || [ -L "$GUARDRAILS_AUTH_QUARANTINE" ]
+}
+
+# A saved lease must be a single Unix epoch line; missing preserves legacy CLI behavior.
+authorization_unusable() {
+  [ -e "$GUARDRAILS_AUTHORIZATION_EXPIRY" ] || [ -L "$GUARDRAILS_AUTHORIZATION_EXPIRY" ] || return 1
+  expiry="$(cat "$GUARDRAILS_AUTHORIZATION_EXPIRY" 2>/dev/null)" || return 0
+  case "$expiry" in
+    "" | *[!0123456789]*) return 0 ;;
+  esac
+  [ "${#expiry}" -le 18 ] || return 0
+  printf '%s\n' "$expiry" | cmp -s - "$GUARDRAILS_AUTHORIZATION_EXPIRY" || return 0
+  now="$(date +%s 2>/dev/null)" || return 0
+  [ "$now" -lt "$expiry" ] 2>/dev/null && return 1
+  return 0
 }
 
 # The first CLI release whose hook finds each file's repository itself (`hook <mode> --synced`).
