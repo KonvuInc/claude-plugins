@@ -586,6 +586,42 @@ PATH="${work}/nocurl:${PATH}" sh "${work}/plugin/scripts/worker.sh" session-star
 check "a binary failing its pin is removed" "$([ -e "${bin}/v2.0.0/guardrails" ] && echo present || echo removed)" "removed"
 check "the removal and the failed download are logged" "$(grep -c 'removed v2.0.0 binary that failed its checksum\|download of v2.0.0 failed' "${state}/logs/plugin.log")" "2"
 
+# Kill the actual installer while its download is partial, then recover through the stale lock.
+mkdir -p "${work}/download/guardrails-cli-${triple}" "${work}/faultcurl"
+cp "${work}/fake" "${work}/download/guardrails-cli-${triple}/guardrails"
+COPYFILE_DISABLE=1 tar -cJf "${work}/release.tar.xz" -C "${work}/download" "./guardrails-cli-${triple}"
+printf 'version v2.0.0\n%s %s %s\n' "$triple" "$(sha256_of "${work}/release.tar.xz")" "$(sha256_of "${work}/fake")" >"${work}/plugin/pins.txt"
+cat >"${work}/faultcurl/curl" <<'EOF'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then output="$2"; break; fi
+  shift
+done
+if [ "${FAULT_DOWNLOAD:-}" = blocked ]; then
+  printf partial >"$output"
+  echo "$$" >"$HOME/download-pid"
+  while :; do sleep 1; done
+fi
+cp "$FAULT_ARCHIVE" "$output"
+EOF
+chmod 0755 "${work}/faultcurl/curl"
+PATH="${work}/faultcurl:${PATH}" FAULT_DOWNLOAD=blocked sh "${work}/plugin/scripts/worker.sh" session-start >/dev/null 2>&1 &
+installer_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -f "${HOME}/download-pid" ] && break
+  sleep 1
+done
+check "the installer reached a partial download" "$([ -f "${HOME}/download-pid" ] && echo yes)" "yes"
+kill -9 "$installer_pid" 2>/dev/null
+if [ -f "${HOME}/download-pid" ]; then
+  kill -9 "$(cat "${HOME}/download-pid")" 2>/dev/null
+fi
+wait "$installer_pid" 2>/dev/null || true
+check "a killed download never publishes an executable" "$([ -e "${bin}/v2.0.0/guardrails" ] && echo installed || echo absent)" "absent"
+PATH="${work}/faultcurl:${PATH}" FAULT_ARCHIVE="${work}/release.tar.xz" sh "${work}/plugin/scripts/worker.sh" session-start
+check "the next session recovers the killed install with verified bytes" "$(sha256_of "${bin}/v2.0.0/guardrails")" "$(sha256_of "${work}/fake")"
+check "the recovered installer releases its stale lock" "$([ -e "${state}/install.lock" ] && echo held || echo free)" "free"
+
 # The wiring itself: the enforce arm's events, no Bash hook, no final sweep.
 hooks="${root}/plugins/guardrails/hooks/hooks.json"
 check "no hook runs the command check or the final sweep" "$(grep -c '"pre-command"\|"final-sweep"\|"Bash"' "$hooks")" "0"
