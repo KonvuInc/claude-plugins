@@ -112,6 +112,33 @@ ends_sessions() {
   valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_SESSION_END_SINCE"
 }
 
+# CLI release that separates compaction reset from session-end cleanup.
+GUARDRAILS_COMPACT_SINCE="v0.6.39"
+
+# True when the CLI at $1 (bin/<version>/guardrails) is GUARDRAILS_COMPACT_SINCE or newer.
+resets_on_compact() {
+  version="${1%/guardrails}"
+  version="${version##*/}"
+  valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_COMPACT_SINCE"
+}
+
+# Map the quarantine reason to constant text so disk content cannot inject JSON.
+auth_notice() {
+  reason="$(sed -n 3p "$GUARDRAILS_AUTH_QUARANTINE" 2>/dev/null)"
+  case "$reason" in
+    computer_revoked) echo "Konvu Guardrails is off: your Konvu admin revoked this computer." ;;
+    integration_removed) echo "Konvu Guardrails is off: this computer's Konvu integration was removed. Ask your admin for the new install snippet." ;;
+    credential_revoked) echo "Konvu Guardrails is off: this computer's Konvu credential was revoked. It enrolls again in the background while KONVU_DEPLOYMENT_KEY is set." ;;
+    credential_expired) echo "Konvu Guardrails is off: this computer's Konvu credential expired. It renews in the background while KONVU_DEPLOYMENT_KEY is set." ;;
+    deployment_key_missing) echo "Konvu Guardrails is off: KONVU_DEPLOYMENT_KEY is not set." ;;
+    deployment_key_invalid) echo "Konvu Guardrails is off: KONVU_DEPLOYMENT_KEY was not accepted. Ask your admin for the current install snippet." ;;
+    enrollment_limit) echo "Konvu Guardrails is off: your Konvu integration has no room for another computer. Ask your admin." ;;
+    access_refused) echo "Konvu Guardrails is off: Konvu refused this computer's access. Ask your admin." ;;
+    # No word yet (a CLI older than v0.6.39, or a lease that lapsed without a refusal).
+    *) echo "Konvu Guardrails is paused: checking this computer's access in the background." ;;
+  esac
+}
+
 # True when `guardrails sync` has published at least one repository's profile. Generation
 # directories start with a dot, so the glob skips them.
 any_profile_synced() {
