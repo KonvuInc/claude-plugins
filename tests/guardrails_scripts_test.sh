@@ -247,8 +247,16 @@ mkdir -p "${state}/profiles/.repo_1.gen-1" "${state}/profiles/bad id"
 rm -f "${HOME}/calls"
 wrap hook pre-edit
 check "without any synced profile the CLI is not run" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
+flushes_before="$(grep -c 'flush: ' "${state}/logs/plugin.log" 2>/dev/null || true)"
 wrap session-end
 check "session-end still reaches the CLI after the profiles went" "$(grep -c '^hook session-end --synced' "${HOME}/calls" 2>/dev/null)" "1"
+# The detached worker creates profiles/, so finish it before restoring this fixture.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  flushes_now="$(grep -c 'flush: ' "${state}/logs/plugin.log" 2>/dev/null || true)"
+  [ "${flushes_now:-0}" -gt "${flushes_before:-0}" ] && break
+  sleep 1
+done
+check "the profile-free session-end flush completed" "$([ "${flushes_now:-0}" -gt "${flushes_before:-0}" ] && echo yes)" "yes"
 rm -rf "${state:?}/profiles"
 mv "${work}/profiles.saved" "${state}/profiles"
 
