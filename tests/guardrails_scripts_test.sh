@@ -435,9 +435,19 @@ printf 'off\n' >"${state}/auth-quarantine"
 for mode in noauth refused; do
   rm -f "${HOME}/calls"
   with_mode "$mode" sh "${scripts}/worker.sh" session-start
-  check "quarantined $mode skips duplicate sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,"
+  check "quarantined $mode still reports health through sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
 done
-check "skipped sync is logged privately" "$(grep -c 'sync: skipped while authorization is paused' "${state}/logs/plugin.log")" "2"
+mkdir -p "${state}/bin/v0.6.38"
+cp "$fake" "${state}/bin/v0.6.38/guardrails"
+echo v0.6.38 >"${state}/bin/current"
+for mode in noauth refused; do
+  rm -f "${HOME}/calls"
+  with_mode "$mode" sh "${scripts}/worker.sh" session-start
+  check "legacy quarantined $mode skips duplicate sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,"
+done
+check "legacy skipped sync is logged privately" "$(grep -c 'sync: skipped while authorization is paused' "${state}/logs/plugin.log")" "2"
+echo v9.9.9 >"${state}/bin/current"
+rm -rf "${state:?}/bin/v0.6.38"
 rm -f "${HOME}/calls"
 with_mode authtransient sh "${scripts}/worker.sh" session-start
 check "transient auth failure still tries sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"

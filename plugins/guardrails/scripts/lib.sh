@@ -122,6 +122,14 @@ resets_on_compact() {
   valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_COMPACT_SINCE"
 }
 
+GUARDRAILS_PAUSED_HEALTH_SINCE="v0.6.39"
+
+reports_paused_health() {
+  version="${1%/guardrails}"
+  version="${version##*/}"
+  valid_version "$version" && ! version_lt "$version" "$GUARDRAILS_PAUSED_HEALTH_SINCE"
+}
+
 # Map the quarantine reason to constant text so disk content cannot inject JSON.
 auth_notice() {
   reason="$(sed -n 3p "$GUARDRAILS_AUTH_QUARANTINE" 2>/dev/null)"
