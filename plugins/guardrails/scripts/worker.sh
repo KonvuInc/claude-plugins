@@ -143,12 +143,12 @@ session_start() {
   # The CLI serializes enrollment itself and writes its caches atomically, so parallel runs are safe.
   run_cli 60 "$binary" auth ensure
   log_line "auth ensure: ${RUN_STATUS}"
-  if auth_quarantined; then
+  if auth_quarantined && ! reports_paused_health "$binary"; then
     case "$RUN_STATUS" in
       3 | 4) log_line "sync: skipped while authorization is paused"; return 0 ;;
     esac
   fi
-  # After a transient auth failure, sync can still use a valid credential to refresh the rules.
+  # New CLIs also report paused health from sync without granting access to rules.
   # sync downloads every repository's rules wherever it runs; from the project it fetches that
   # one first, and an older server that lists nothing syncs only the project's checkout.
   # Force refresh so a company steering change reaches the next session despite the listing cache.

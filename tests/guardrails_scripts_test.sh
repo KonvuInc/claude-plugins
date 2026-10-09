@@ -40,7 +40,7 @@ case "${FAKE_MODE:-ok}" in
   block) echo "blocked" >&2; exit 2 ;;
   crash) exit 101 ;;
   slow) sleep 3 ;;
-  slowflush) [ "$1" = flush ] && sleep 3 ;;
+  slowflush) if [ "$1" = flush ]; then sleep 3; touch "$HOME/slow-flush-complete"; fi ;;
   usage) printf 'guardrails \342\200\224 security profile enforcement for coding agents\n\n  guardrails hook <session-start|pre-edit>\n' >&2; exit 2 ;;
   quoted) printf '[secprofile] Before finishing, resolve these:\n  - x\n  guardrails hook <y.py: hit\n' >&2; exit 2 ;;
   noauth) [ "$1" = auth ] && exit 3 ;;
@@ -247,8 +247,16 @@ mkdir -p "${state}/profiles/.repo_1.gen-1" "${state}/profiles/bad id"
 rm -f "${HOME}/calls"
 wrap hook pre-edit
 check "without any synced profile the CLI is not run" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
+flushes_before="$(grep -c 'flush: ' "${state}/logs/plugin.log" 2>/dev/null || true)"
 wrap session-end
-check "session-end still clears state left from before the profiles went" "$(cut -d' ' -f1-3 "${HOME}/calls" 2>/dev/null)" "hook session-end --synced"
+check "session-end still reaches the CLI after the profiles went" "$(grep -c '^hook session-end --synced' "${HOME}/calls" 2>/dev/null)" "1"
+# The detached worker creates profiles/, so finish it before restoring this fixture.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  flushes_now="$(grep -c 'flush: ' "${state}/logs/plugin.log" 2>/dev/null || true)"
+  [ "${flushes_now:-0}" -gt "${flushes_before:-0}" ] && break
+  sleep 1
+done
+check "the profile-free session-end flush completed" "$([ "${flushes_now:-0}" -gt "${flushes_before:-0}" ] && echo yes)" "yes"
 rm -rf "${state:?}/profiles"
 mv "${work}/profiles.saved" "${state}/profiles"
 
@@ -280,7 +288,31 @@ wrap hook final-sweep
 check "the final sweep is not run as a hook either" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0::"
 
 wrap session-end
-check "session-end deletes the session's state through the CLI" "${status}:${out}:$(cat "${HOME}/calls" 2>/dev/null)" "0:{\"hookSpecificOutput\":{}}:hook session-end --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+check "session-end runs through the CLI" "${status}:${out}:$(grep '^hook session-end' "${HOME}/calls" 2>/dev/null)" "0:{\"hookSpecificOutput\":{}}:hook session-end --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q '^flush' "${HOME}/calls" 2>/dev/null && break
+  sleep 1
+done
+check "session-end sends the queued events in the background" "$(grep -c '^flush' "${HOME}/calls")" "1"
+
+rm -f "${HOME}/calls"
+wrap compact
+check "a compaction resets the session through the CLI's compact mode" "$(grep '^hook' "${HOME}/calls" 2>/dev/null)" "hook compact --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+mkdir -p "${state}/bin/v0.6.38"
+cp "$fake" "${state}/bin/v0.6.38/guardrails"
+echo v0.6.38 >"${state}/bin/current"
+rm -f "${HOME}/calls"
+wrap compact
+check "a CLI from before compact resets through session-end, which still deleted the state" "$(grep '^hook' "${HOME}/calls" 2>/dev/null)" "hook session-end --synced SECPROFILE_DIR=<unset> ROOT=${project}"
+: >"${HOME}/calls"
+wrap session-end
+check "ending with an older fallback keeps its refuse-once marks" "$(grep -c '^hook session-end' "${HOME}/calls" 2>/dev/null || true)" "0"
+for _ in 1 2 3 4 5; do
+  grep -q '^flush' "${HOME}/calls" 2>/dev/null && break
+  sleep 1
+done
+echo v9.9.9 >"${state}/bin/current"
+rm -rf "${state:?}/bin/v0.6.38"
 
 wrap hook not-a-mode
 check "unknown hook mode is ignored" "${status}:${out}" "0:"
@@ -306,10 +338,13 @@ started="$(date +%s)"
 # Claude Code reads hook output through pipes, so the detached flush must not hold them open.
 with_mode slowflush sh "${scripts}/guardrails.sh" stop </dev/null 2>&1 | cat >/dev/null
 check "stop does not wait for a slow flush" "$(($(date +%s) - started < 3))" "1"
+# Wait for the slow worker itself, without depending on process-list access.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ "$(grep -c 'flush: ' "${state}/logs/plugin.log")" -ge 2 ] && break
+  [ -f "${HOME}/slow-flush-complete" ] && break
   sleep 1
 done
+
+check "the slow flush completed" "$([ -f "${HOME}/slow-flush-complete" ] && echo yes)" "yes"
 
 # The CLI serializes flushes on its own flush.lock file: the plugin neither collides with it nor
 # skips because of it, and removes a stale flush.lock directory plugin 0.0.2 left behind.
@@ -342,7 +377,7 @@ for source in startup resume compact; do
   rm -f "${HOME}/calls"
   printf '{"session_id":"s1","hook_event_name":"SessionStart","source":"%s"}' "$source" | sh "${scripts}/session_start.sh"
   grep -q '^sync' "${HOME}/calls" 2>/dev/null || sleep 2
-  check "SessionStart from $source resets the session only after a compaction" "$(grep -c '^hook session-end --synced' "${HOME}/calls")" "$([ "$source" = compact ] && echo 1 || echo 0)"
+  check "SessionStart from $source resets the session only after a compaction" "$(grep -c '^hook compact --synced' "${HOME}/calls"):$(grep -c '^hook session-end' "${HOME}/calls")" "$([ "$source" = compact ] && echo 1 || echo 0):0"
 done
 rm -rf "${state:?}/install.lock"
 
@@ -400,16 +435,26 @@ printf 'off\n' >"${state}/auth-quarantine"
 for mode in noauth refused; do
   rm -f "${HOME}/calls"
   with_mode "$mode" sh "${scripts}/worker.sh" session-start
-  check "quarantined $mode skips duplicate sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,"
+  check "quarantined $mode still reports health through sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
 done
-check "skipped sync is logged privately" "$(grep -c 'sync: skipped while authorization is paused' "${state}/logs/plugin.log")" "2"
+mkdir -p "${state}/bin/v0.6.38"
+cp "$fake" "${state}/bin/v0.6.38/guardrails"
+echo v0.6.38 >"${state}/bin/current"
+for mode in noauth refused; do
+  rm -f "${HOME}/calls"
+  with_mode "$mode" sh "${scripts}/worker.sh" session-start
+  check "legacy quarantined $mode skips duplicate sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,"
+done
+check "legacy skipped sync is logged privately" "$(grep -c 'sync: skipped while authorization is paused' "${state}/logs/plugin.log")" "2"
+echo v9.9.9 >"${state}/bin/current"
+rm -rf "${state:?}/bin/v0.6.38"
 rm -f "${HOME}/calls"
 with_mode authtransient sh "${scripts}/worker.sh" session-start
 check "transient auth failure still tries sync" "$(cut -d' ' -f1-2 "${HOME}/calls" | tr '\n' ',')" "auth ensure,sync --force,"
 rm -f "${HOME}/calls"
 started="$(date +%s)"
 diagnostic="$(sh "${scripts}/session_start.sh" 2>"${work}/session-start-stderr")"
-check "quarantine gives a visible startup message" "$diagnostic" '{"systemMessage":"Konvu Guardrails paused; checking workstation access in the background."}'
+check "quarantine without a recorded cause gives a visible startup message" "$diagnostic" '{"systemMessage":"Konvu Guardrails is paused: checking this computer'"'"'s access in the background."}'
 check "quarantine notice does not rely on stderr" "$(cat "${work}/session-start-stderr")" ""
 check "quarantine does not delay SessionStart" "$(($(date +%s) - started < 3))" "1"
 check "quarantine notice is limited to once per day" "$(sh "${scripts}/session_start.sh" 2>"${work}/session-start-stderr")" ""
@@ -425,6 +470,34 @@ check "failed recovery keeps quarantine" "${status}:${out}:$(test -e "${state}/a
 with_mode recover sh "${scripts}/worker.sh" session-start
 wrap hook pre-edit
 check "complete recovery resumes hooks" "${status}:${out}:$(test -e "${state}/auth-quarantine" && echo kept || echo cleared)" '0:{"hookSpecificOutput":{}}:cleared'
+
+# Each cause the CLI records with the pause gets its own notice, still once per UTC day.
+notice() {
+  rm -rf "${state:?}/notice-days"
+  printf 'off\n.auth-quarantine.generation-1\n%s\n' "$1" >"${state}/auth-quarantine"
+  sh "${scripts}/session_start.sh" </dev/null 2>/dev/null
+}
+check "a revoked computer is named" "$(notice computer_revoked)" '{"systemMessage":"Konvu Guardrails is off: your Konvu admin revoked this computer."}'
+check "a removed integration is named" "$(notice integration_removed)" '{"systemMessage":"Konvu Guardrails is off: this computer'"'"'s Konvu integration was removed. Ask your admin for the new install snippet."}'
+check "a missing deployment key is named" "$(notice deployment_key_missing)" '{"systemMessage":"Konvu Guardrails is off: KONVU_DEPLOYMENT_KEY is not set."}'
+for word in credential_revoked credential_expired deployment_key_invalid enrollment_limit access_refused; do
+  check "the $word notice is specific" "$(notice "$word" | grep -c 'is off: ')" "1"
+done
+check "an unknown word never reaches the message" "$(notice 'x","injected":"1')" '{"systemMessage":"Konvu Guardrails is paused: checking this computer'"'"'s access in the background."}'
+check "the cause's notice is still once per day" "$(sh "${scripts}/session_start.sh" </dev/null 2>/dev/null)" ""
+mkdir -p "${state}/notice-days/20200101"
+touch -t 202001010000 "${state}/notice-days/20200101"
+rm -rf "${state}/notice-days/$(date -u +%Y%m%d)"
+sh "${scripts}/session_start.sh" </dev/null >/dev/null 2>&1
+check "old notice days are pruned" "$([ -d "${state}/notice-days/20200101" ] && echo kept || echo pruned)" "pruned"
+rm -f "${state}/auth-quarantine"
+printf 'off\n' >"${state}/steering-state"
+rm -rf "${state:?}/notice-days"
+check "steering turned off by the company stays silent" "$(sh "${scripts}/session_start.sh" </dev/null 2>/dev/null)" ""
+printf 'on\n' >"${state}/steering-state"
+# Today's notice was already given above.
+mkdir -p "${state}/notice-days/$(date -u +%Y%m%d)"
+sleep 2
 
 printf '1\n' >"${state}/authorization-expires-at"
 rm -f "${HOME}/calls"
@@ -475,9 +548,11 @@ chmod 0755 "${work}/rosetta/uname" "${work}/rosetta/sysctl"
 check "an Intel Mac gets the x86_64 build" "$(PATH="${work}/rosetta:${PATH}" platform_triple)" "x86_64-apple-darwin"
 check "Rosetta 2 gets the native Apple silicon build" "$(FAKE_TRANSLATED=1 PATH="${work}/rosetta:${PATH}" platform_triple)" "aarch64-apple-darwin"
 
+check "only a CLI from the compact release on is asked to compact" "$(for v in v0.6.38 v0.6.39 v0.10.0 bogus; do resets_on_compact "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.39,v0.10.0,"
 check "only a CLI from the session-end release on is asked to end a session" "$(for v in v0.6.34 v0.6.35 v0.10.0 bogus; do ends_sessions "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.35,v0.10.0,"
 check "only a CLI from the per-file release on is run with --synced" "$(for v in v0.6.32 v0.6.33 v0.10.0 v1.0.0 bogus; do finds_repository_per_file "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.33,v0.10.0,v1.0.0,"
 check "release tags compare numerically" "$(version_lt v0.6.9 v0.6.29 && echo lt):$(version_lt v0.6.29 v0.6.9 || echo ge):$(version_lt v1.0.0 v1.0.0 || echo eq)" "lt:ge:eq"
+check "malformed tags never enable release compatibility" "$(for v in v0.6.39.1 v0.6.39v1 v0..39 v0.6. v0.6.39-rc1 0.6.39; do valid_version "$v" && printf '%s,' "$v"; done)" ""
 
 # Install bookkeeping, on a copy of the plugin whose pins.txt pins the fake CLI for this machine.
 triple="$(platform_triple)"
@@ -511,6 +586,42 @@ echo tampered >>"${bin}/v2.0.0/guardrails"
 PATH="${work}/nocurl:${PATH}" sh "${work}/plugin/scripts/worker.sh" session-start
 check "a binary failing its pin is removed" "$([ -e "${bin}/v2.0.0/guardrails" ] && echo present || echo removed)" "removed"
 check "the removal and the failed download are logged" "$(grep -c 'removed v2.0.0 binary that failed its checksum\|download of v2.0.0 failed' "${state}/logs/plugin.log")" "2"
+
+# Kill the actual installer while its download is partial, then recover through the stale lock.
+mkdir -p "${work}/download/guardrails-cli-${triple}" "${work}/faultcurl"
+cp "${work}/fake" "${work}/download/guardrails-cli-${triple}/guardrails"
+COPYFILE_DISABLE=1 tar -cJf "${work}/release.tar.xz" -C "${work}/download" "./guardrails-cli-${triple}"
+printf 'version v2.0.0\n%s %s %s\n' "$triple" "$(sha256_of "${work}/release.tar.xz")" "$(sha256_of "${work}/fake")" >"${work}/plugin/pins.txt"
+cat >"${work}/faultcurl/curl" <<'EOF'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then output="$2"; break; fi
+  shift
+done
+if [ "${FAULT_DOWNLOAD:-}" = blocked ]; then
+  printf partial >"$output"
+  echo "$$" >"$HOME/download-pid"
+  while :; do sleep 1; done
+fi
+cp "$FAULT_ARCHIVE" "$output"
+EOF
+chmod 0755 "${work}/faultcurl/curl"
+PATH="${work}/faultcurl:${PATH}" FAULT_DOWNLOAD=blocked sh "${work}/plugin/scripts/worker.sh" session-start >/dev/null 2>&1 &
+installer_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -f "${HOME}/download-pid" ] && break
+  sleep 1
+done
+check "the installer reached a partial download" "$([ -f "${HOME}/download-pid" ] && echo yes)" "yes"
+kill -9 "$installer_pid" 2>/dev/null
+if [ -f "${HOME}/download-pid" ]; then
+  kill -9 "$(cat "${HOME}/download-pid")" 2>/dev/null
+fi
+wait "$installer_pid" 2>/dev/null || true
+check "a killed download never publishes an executable" "$([ -e "${bin}/v2.0.0/guardrails" ] && echo installed || echo absent)" "absent"
+PATH="${work}/faultcurl:${PATH}" FAULT_ARCHIVE="${work}/release.tar.xz" sh "${work}/plugin/scripts/worker.sh" session-start
+check "the next session recovers the killed install with verified bytes" "$(sha256_of "${bin}/v2.0.0/guardrails")" "$(sha256_of "${work}/fake")"
+check "the recovered installer releases its stale lock" "$([ -e "${state}/install.lock" ] && echo held || echo free)" "free"
 
 # The wiring itself: the enforce arm's events, no Bash hook, no final sweep.
 hooks="${root}/plugins/guardrails/hooks/hooks.json"

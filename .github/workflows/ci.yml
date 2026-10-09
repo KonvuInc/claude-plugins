@@ -11,7 +11,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: JSON is valid
@@ -91,3 +91,9 @@ jobs:
         run: dash tests/guardrails_scripts_test.sh
       - name: Script tests (bash as sh)
         run: bash --posix tests/guardrails_scripts_test.sh
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      - name: Verify release signatures and pinned bytes
+        run: bash scripts/pin-cli.sh "$(awk '$1 == "version" {print $2}' plugins/guardrails/pins.txt)" --check
+      - name: Check release tooling
+        run: /tmp/shellcheck-v0.10.0/shellcheck -s bash scripts/*.sh

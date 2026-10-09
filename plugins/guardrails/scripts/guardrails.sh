@@ -1,20 +1,25 @@
 #!/bin/sh
 # Runs one guardrails CLI hook for Claude Code: `guardrails.sh hook <mode>`, `guardrails.sh
-# session-end` or `guardrails.sh stop`. SessionStart does not come here: it only starts worker.sh
-# (see session_start.sh).
+# session-end`, `guardrails.sh compact` or `guardrails.sh stop`. SessionStart itself does not come
+# here: it starts worker.sh and, after a compaction, runs `compact` (see session_start.sh).
 # Always exits 0. Refusals reach Claude Code as the CLI's own JSON on stdout, never as an exit
 # code, so a missing CLI, platform or synced profile, a crash or a timeout all fail open.
 
 script_dir="$(cd "$(dirname "$0")" && pwd)" || exit 0
 # shellcheck source=lib.sh
 . "${script_dir}/lib.sh"
-if auth_quarantined || steering_disabled || authorization_unusable; then
+if [ "${1:-}" != compact ] && { auth_quarantined || steering_disabled || authorization_unusable; }; then
   exit 0
 fi
 
 case "$1" in
   hook) mode="$2" ;;
-  session-end) mode=session-end ;;
+  session-end)
+    # The session's refuse-once state stays for `claude --resume`; queued events are sent now.
+    nohup sh "${script_dir}/worker.sh" flush >/dev/null 2>&1 </dev/null &
+    mode=session-end
+    ;;
+  compact) mode=compact ;;
   stop)
     # Stop only sends the queued trigger events, detached so it never delays or holds the turn.
     # No final sweep: it would block the turn, and on a turn with nothing to say it would wipe the
@@ -25,15 +30,25 @@ case "$1" in
   *) exit 0 ;;
 esac
 case "$mode" in
-  prompt-submit | pre-edit | post-edit | session-end) ;;
+  prompt-submit | pre-edit | post-edit | session-end | compact) ;;
   *) exit 0 ;;
 esac
 binary="$(plugin_binary)" || exit 0
 flag=""
 root="${CLAUDE_PROJECT_DIR:-}"
-if [ "$mode" = session-end ]; then
-  # Only deletes this session's local state, so it needs no synced profile, only a CLI that has it.
-  ends_sessions "$binary" || exit 0
+if [ "$mode" = compact ]; then
+  # Legacy session-end is safe only when a compaction explicitly requests a reset.
+  if resets_on_compact "$binary"; then
+    :
+  elif ends_sessions "$binary"; then
+    mode=session-end
+  else
+    exit 0
+  fi
+  flag=--synced
+elif [ "$mode" = session-end ]; then
+  # Older CLIs erase refuse-once marks here, breaking resume.
+  resets_on_compact "$binary" || exit 0
   flag=--synced
 elif ! any_profile_synced; then
   exit 0
