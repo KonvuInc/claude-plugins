@@ -552,6 +552,7 @@ check "only a CLI from the compact release on is asked to compact" "$(for v in v
 check "only a CLI from the session-end release on is asked to end a session" "$(for v in v0.6.34 v0.6.35 v0.10.0 bogus; do ends_sessions "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.35,v0.10.0,"
 check "only a CLI from the per-file release on is run with --synced" "$(for v in v0.6.32 v0.6.33 v0.10.0 v1.0.0 bogus; do finds_repository_per_file "${state}/bin/${v}/guardrails" && printf '%s,' "$v"; done)" "v0.6.33,v0.10.0,v1.0.0,"
 check "release tags compare numerically" "$(version_lt v0.6.9 v0.6.29 && echo lt):$(version_lt v0.6.29 v0.6.9 || echo ge):$(version_lt v1.0.0 v1.0.0 || echo eq)" "lt:ge:eq"
+check "malformed tags never enable release compatibility" "$(for v in v0.6.39.1 v0.6.39v1 v0..39 v0.6. v0.6.39-rc1 0.6.39; do valid_version "$v" && printf '%s,' "$v"; done)" ""
 
 # Install bookkeeping, on a copy of the plugin whose pins.txt pins the fake CLI for this machine.
 triple="$(platform_triple)"

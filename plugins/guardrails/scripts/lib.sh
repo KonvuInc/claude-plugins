@@ -15,16 +15,11 @@ GUARDRAILS_DOWNLOAD_BASE="https://dneaqnz3vqe4a.cloudfront.net/guardrails"
 # Callers set script_dir to this file's directory before sourcing it.
 GUARDRAILS_PINS="${script_dir:?}/../pins.txt"
 
-# A release tag is a single path component: v, digits and dots only.
+# Compatibility gates accept only complete semantic release tags.
 valid_version() {
-  case "$1" in
-    v[0-9]*.[0-9]*.[0-9]*) ;;
-    *) return 1 ;;
-  esac
-  case "$1" in
-    *[!v0-9.]*) return 1 ;;
-  esac
-  return 0
+  [ "${#1}" -le 64 ] || return 1
+  case "$1" in *[!v0-9.]*) return 1 ;; esac
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
 }
 
 # A repository id is a single path component: 1 to 64 letters, digits, '-' and '_', as the CLI
